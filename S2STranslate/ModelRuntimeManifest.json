@@ -1,0 +1,70 @@
+{
+  "modelRepo": "anquachdev/hbk-zero-3b-mlx-q4",
+  "revision": "558daadd9272df9432642783b57b02756ff34d5b",
+  "requiredFiles": {
+    "architectureConfig": "config.json",
+    "hibikiWeights": "hibiki.q4.safetensors",
+    "mimiWeights": "mimi-pytorch-e351c8d8@125.safetensors",
+    "tokenizer": "tokenizer_spm_48k_multi6_2.model"
+  },
+  "optionalFiles": {
+    "mlxPatch": "mlx_hibiki_patch.py",
+    "debugHelper": "verify_mlx_q4.py"
+  },
+  "generationDefaults": {
+    "temperature": 0.8,
+    "textTemperature": 0.8,
+    "topK": 250,
+    "textTopK": 250
+  },
+  "quantization": {
+    "format": "mlxQ4Safetensors",
+    "bits": 4,
+    "groupSize": 32,
+    "strictGroupSize": true
+  },
+  "architectureDeltas": {
+    "hiddenScale": 6,
+    "kvRepeat": 2,
+    "positionalEmbedding": "rope_concat",
+    "depformerOutputLayerNorm": true
+  },
+  "streamingPolicy": {
+    "sourceAudio": "encodeWithStreamingMimi",
+    "modelInput": "feedSourceAudioTokensIncrementally",
+    "modelOutput": "decodeGeneratedAudioTokensIncrementally",
+    "offlineInputEnd": "markSourceAudioEOSAndFlushUntilStopCondition",
+    "offlineStopCondition": "sustainedTextPaddingOrBlank",
+    "liveInputEnd": "websocketCloseWithoutExplicitFlushContract"
+  },
+  "tokenPolicy": {
+    "textBlankToken": 0,
+    "textPaddingToken": 3,
+    "postInputStop": {
+      "tokens": [0, 3],
+      "consecutiveFrames": 12
+    }
+  },
+  "parityTarget": {
+    "phase": "structuralTokenTrace",
+    "reference": "ref/hibiki-zero-mlx/src/infer_mlx_fast.py",
+    "referenceCommit": "31a0f2b151f016e9347a9b5abd1d67f28c43448f",
+    "frontendReferences": [
+      "ref/hibiki-zero-mlx/frontend/app/page.tsx",
+      "ref/hibiki-zero-mlx/frontend/app/useAudioProcessor.ts",
+      "ref/hibiki-zero-mlx/hibiki_zero/inference.py"
+    ],
+    "fixture": "smallFrenchAudio",
+    "checks": [
+      "mimiInputTokenFrameCount",
+      "generatedTextTokenSequence",
+      "textBlankAndPaddingSkip",
+      "textPadStopFrameCount",
+      "outputEventOrder",
+      "tensorShapes"
+    ],
+    "excludes": [
+      "perceptualAudioQuality"
+    ]
+  }
+}

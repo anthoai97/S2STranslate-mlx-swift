@@ -11,3 +11,8 @@ Triage uses the default five-status vocabulary. See `docs/agents/triage-labels.m
 ### Domain docs
 
 This repo uses a single-context domain docs layout. See `docs/agents/domain.md`.
+
+### Rules
+Do not over-engineer.
+Aim for simplicity and elegance of implementation.
+Make minimal edits.

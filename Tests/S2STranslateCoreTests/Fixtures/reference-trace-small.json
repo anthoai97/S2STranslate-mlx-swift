@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "name": "small-french-audio-structure",
+  "source": {
+    "reference": "ref/hibiki-zero-mlx/src/infer_mlx_fast.py",
+    "referenceCommit": "31a0f2b151f016e9347a9b5abd1d67f28c43448f",
+    "modelRevision": "558daadd9272df9432642783b57b02756ff34d5b",
+    "fixture": "smallFrenchAudio"
+  },
+  "events": [
+    {
+      "stream": "session",
+      "name": "prepare",
+      "frameIndex": 0
+    },
+    {
+      "stream": "codec",
+      "name": "mimiEncodeStep",
+      "frameIndex": 0,
+      "shape": [1, 16],
+      "tokens": [101, 102, 103, 104],
+      "cadenceMilliseconds": 80
+    },
+    {
+      "stream": "model",
+      "name": "hibikiStep",
+      "frameIndex": 0,
+      "shape": [1, 17],
+      "tokens": [0, 501, 502],
+      "cadenceMilliseconds": 80
+    },
+    {
+      "stream": "text",
+      "name": "skipBlankOrPadding",
+      "frameIndex": 0,
+      "tokens": [0]
+    },
+    {
+      "stream": "audio",
+      "name": "mimiDecodeStep",
+      "frameIndex": 0,
+      "shape": [1, 1, 1920]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Build Streaming Audio Input Slice
 
-Status: ready-for-agent
+Status: complete
 
 ## Parent
 
@@ -12,11 +12,19 @@ Add the first audio input path that feeds the experiment session with timestampe
 
 ## Acceptance criteria
 
-- [ ] The session can consume PCM chunks from a simulated or file-backed source.
-- [ ] The app can start and stop an input stream from the proof-of-concept UI.
-- [ ] Chunk timing, sample rate, and stream status are visible through session state or metrics.
-- [ ] Tests cover chunk emission, stop behavior, and at least one input failure.
-- [ ] A device-only microphone smoke path is available or documented without making automated tests depend on physical hardware.
+- [x] The session can consume PCM chunks from a simulated or file-backed source.
+- [x] The app can start and stop an input stream from the proof-of-concept UI.
+- [x] Chunk timing, sample rate, and stream status are visible through session state or metrics.
+- [x] Tests cover chunk emission, stop behavior, and at least one input failure.
+- [x] A device-only microphone smoke path is available or documented without making automated tests depend on physical hardware.
+
+## Implementation notes
+
+- Added `PCMChunk`, `AudioInputSource`, `FixtureAudioInputSource`, `FailingAudioInputSource`, `AudioInputExperimentBackend`, and `ArtifactAndAudioExperimentBackend`.
+- Extended `ExperimentSession` observations with audio input status, chunk count, sample rate, streamed duration, and last audio frame.
+- Wired the SwiftUI proof-of-concept to prepare demo artifacts first, then stream fixture 24 kHz PCM chunks on **Start**.
+- Added `docs/microphone-smoke-test.md` as the device-only manual path for the future live microphone source.
+- Verified with `swift test`.
 
 ## Blocked by
 

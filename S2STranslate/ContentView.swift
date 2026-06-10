@@ -9,20 +9,20 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var session = ExperimentSession(
-        backend: ScriptedExperimentBackend(
-            prepareEvents: [
-                .preparationProgress(0.35),
-                .preparationProgress(1.0),
-                .ready,
-            ],
-            runEvents: [
-                .observation("fake backend tick"),
-                .observation("placeholder output event"),
-            ]
+        backend: HibikiTranslationExperimentBackend(
+            artifactPreparer: ModelArtifactPreparer(
+                manifest: .hibikiQ4Default,
+                provider: DemoModelArtifactProvider()
+            ),
+            audioSource: FixtureAudioInputSource(),
+            mimiEncoder: DeterministicMimiStreamingEncoder(),
+            inferenceSession: DeterministicHibikiInferenceSession(),
+            mimiDecoder: DeterministicMimiStreamingDecoder(),
+            playbackSink: BufferedPlaybackSink()
         )
     )
     @State private var showSettings = false
-    @State private var showPlaceholderObservations = true
+    @State private var showPlaceholderObservations = false
 
     var body: some View {
         NavigationStack {
@@ -89,7 +89,7 @@ struct ContentView: View {
                 .popover(isPresented: $showSettings, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 16) {
                         Toggle(isOn: $showPlaceholderObservations) {
-                            Label("Placeholder Observations", systemImage: "chart.bar")
+                            Label("Session Observations", systemImage: "chart.bar")
                         }
 
                         Button(role: .destructive) {
@@ -202,7 +202,7 @@ private struct ExperimentInfoPanel: View {
                 Text(statusText)
                     .font(.headline)
 
-                Text("Fake backend only. Real model inference is not wired in this slice.")
+                Text("Artifact preparation, fixture audio input, deterministic Hibiki inference, Mimi decode, and buffered playback demo.")
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -269,7 +269,7 @@ private struct ExperimentStatusPanel: View {
                     Text("Script")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Gauge(value: Double(eventCount), in: 0...5) {
+                    Gauge(value: Double(eventCount), in: 0...Double(max(5, eventCount))) {
                         EmptyView()
                     } currentValueLabel: {
                         Text("\(eventCount) events")
@@ -325,37 +325,216 @@ private struct PlaceholderObservationsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Placeholder Observations")
+            Text("Session Observations")
                 .font(.headline)
 
-            Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
-                GridRow {
-                    Text("Progress")
-                        .foregroundStyle(.secondary)
-                    Text(observations.progress.formatted(.percent.precision(.fractionLength(0))))
-                }
+            ScrollView(.vertical) {
+                Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Progress")
+                            .foregroundStyle(.secondary)
+                        Text(observations.progress.formatted(.percent.precision(.fractionLength(0))))
+                    }
 
-                GridRow {
-                    Text("Events")
-                        .foregroundStyle(.secondary)
-                    Text("\(observations.eventCount)")
-                }
+                    GridRow {
+                        Text("Events")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.eventCount)")
+                    }
 
-                GridRow {
-                    Text("Last")
-                        .foregroundStyle(.secondary)
-                    Text(observations.lastEventName)
+                    GridRow {
+                        Text("Last")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.lastEventName)
+                    }
+
+                    GridRow {
+                        Text("Audio")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.audioInputStatus)
+                    }
+
+                    GridRow {
+                        Text("Chunks")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.audioChunkCount)")
+                    }
+
+                    GridRow {
+                        Text("Sample Rate")
+                            .foregroundStyle(.secondary)
+                        Text(sampleRateText)
+                    }
+
+                    GridRow {
+                        Text("Duration")
+                            .foregroundStyle(.secondary)
+                        Text(durationText)
+                    }
+
+                    GridRow {
+                        Text("Frame")
+                            .foregroundStyle(.secondary)
+                        Text(frameText)
+                    }
+
+                    GridRow {
+                        Text("Mimi")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.mimiEncodeStatus)
+                    }
+
+                    GridRow {
+                        Text("Mimi Frames")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.mimiEncodedFrameCount)")
+                    }
+
+                    GridRow {
+                        Text("Codebooks")
+                            .foregroundStyle(.secondary)
+                        Text(codebookText)
+                    }
+
+                    GridRow {
+                        Text("Tokens")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.mimiTokenCount)")
+                    }
+
+                    GridRow {
+                        Text("Mimi Frame")
+                            .foregroundStyle(.secondary)
+                        Text(mimiFrameText)
+                    }
+
+                    GridRow {
+                        Text("Hibiki")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.hibikiInferenceStatus)
+                    }
+
+                    GridRow {
+                        Text("Steps")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.hibikiStepCount)")
+                    }
+
+                    GridRow {
+                        Text("Text Tokens")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.hibikiTextTokenCount)")
+                    }
+
+                    GridRow {
+                        Text("Visible Text")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.hibikiVisibleTextCount)")
+                    }
+
+                    GridRow {
+                        Text("Gen Audio")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.hibikiGeneratedAudioFrameCount)")
+                    }
+
+                    GridRow {
+                        Text("Sampling")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.hibikiSamplingSummary)
+                    }
+
+                    GridRow {
+                        Text("Decode")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.mimiDecodeStatus)
+                    }
+
+                    GridRow {
+                        Text("Decoded")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.decodedAudioChunkCount)")
+                    }
+
+                    GridRow {
+                        Text("Decoded Rate")
+                            .foregroundStyle(.secondary)
+                        Text(decodedRateText)
+                    }
+
+                    GridRow {
+                        Text("Decoded Dur")
+                            .foregroundStyle(.secondary)
+                        Text(decodedDurationText)
+                    }
+
+                    GridRow {
+                        Text("Playback")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.playbackStatus)
+                    }
+
+                    GridRow {
+                        Text("Played")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.playbackChunkCount)")
+                    }
                 }
+                .font(.system(.body, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("Fixture PCM chunks, deterministic Hibiki text/audio tokens, decoded PCM chunks, and buffered playback delivery are measured. Real MLX weights, audible playback, model latency, and translation quality are not measured yet.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 6)
             }
-            .font(.system(.body, design: .monospaced))
-
-            Text("No model latency, memory, frame cadence, token count, audio chunks, or translation quality is measured yet.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+            .frame(maxHeight: 220)
+            .scrollIndicators(.visible)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(.secondary.opacity(0.1)))
+    }
+
+    private func metricValue(_ value: String) -> some View {
+        Text(value)
+            .lineLimit(2)
+            .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var sampleRateText: String {
+        guard observations.audioSampleRate > 0 else { return "n/a" }
+        return "\(observations.audioSampleRate) Hz"
+    }
+
+    private var durationText: String {
+        observations.audioDurationMilliseconds.formatted(.number.precision(.fractionLength(0))) + " ms"
+    }
+
+    private var frameText: String {
+        guard let frame = observations.lastAudioFrameIndex else { return "n/a" }
+        return "\(frame)"
+    }
+
+    private var codebookText: String {
+        guard observations.mimiCodebookCount > 0 else { return "n/a" }
+        return "\(observations.mimiCodebookCount)"
+    }
+
+    private var mimiFrameText: String {
+        guard let frame = observations.lastMimiFrameIndex else { return "n/a" }
+        return "\(frame)"
+    }
+
+    private var decodedRateText: String {
+        guard observations.decodedAudioSampleRate > 0 else { return "n/a" }
+        return "\(observations.decodedAudioSampleRate) Hz"
+    }
+
+    private var decodedDurationText: String {
+        observations.decodedAudioDurationMilliseconds.formatted(.number.precision(.fractionLength(0))) + " ms"
     }
 }
 

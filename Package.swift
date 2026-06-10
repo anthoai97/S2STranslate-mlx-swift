@@ -18,13 +18,25 @@ let package = Package(
             exclude: [
                 "Assets.xcassets",
                 "ContentView.swift",
+                "ModelRuntimeManifest.json",
                 "S2STranslateApp.swift",
             ],
-            sources: ["ExperimentSession.swift"]
+            sources: [
+                "ExperimentSession.swift",
+                "ModelArtifactPreparation.swift",
+                "ReferenceTrace.swift",
+                "StreamingHibikiInference.swift",
+                "StreamingMimiDecode.swift",
+                "StreamingMimiEncode.swift",
+                "StreamingAudioInput.swift",
+            ]
         ),
         .testTarget(
             name: "S2STranslateCoreTests",
-            dependencies: ["S2STranslateCore"]
+            dependencies: ["S2STranslateCore"],
+            resources: [
+                .process("Fixtures"),
+            ]
         ),
     ]
 )
