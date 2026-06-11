@@ -279,4 +279,17 @@ public final class MLXMimiSplitResidualVectorQuantizer {
     public func encode(_ x: MLXMimiStreamArray) -> MLXMimiStreamArray {
         x.map(encode)
     }
+
+    public func decode(_ codes: MLXArray) -> MLXArray {
+        var quantized = rvqFirst.decode(codes[0..., ..<1])
+        if codebookCount > 1 {
+            quantized = quantized + rvqRest.decode(codes[0..., 1...])
+        }
+        if quantized.shape.count == 3,
+           quantized.shape[1] != outputDimension,
+           quantized.shape[2] == outputDimension {
+            quantized = quantized.swappedAxes(-1, -2)
+        }
+        return quantized
+    }
 }

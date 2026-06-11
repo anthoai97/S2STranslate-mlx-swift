@@ -12,6 +12,10 @@ struct MLXMimiGraphParameterTests {
         let shapes = MLXMimiGraphParameterApplier.expectedShapes(for: model)
 
         #expect(shapes["encoder.init_conv1d.conv.weight"] == [2, 3, 1])
+        #expect(shapes["decoder.init_conv1d.conv.weight"] == [4, 3, 8])
+        #expect(shapes["decoder.layers.0.upsample.convtr.weight"] == [2, 4, 4])
+        #expect(shapes["decoder.layers.0.upsample.convtr.bias"] == [2])
+        #expect(shapes["upsample.convtr.weight"] == [1, 1920, 8])
         #expect(shapes["encoder_transformer.layers.0.self_attn.in_proj.weight"] == [24, 8])
         #expect(shapes["encoder_transformer.layers.0.gating.linear1.weight"] == [16, 8])
         #expect(shapes["quantizer.rvq_first.input_proj.weight"] == [4, 1, 8])
@@ -33,12 +37,22 @@ struct MLXMimiGraphParameterTests {
                     shape: [4, 1, 8],
                     array: nil
                 ),
+                "decoder.layers.0.upsample.convtr.weight": MLXMimiWeightTensor(
+                    shape: [2, 4, 4],
+                    array: nil
+                ),
+                "upsample.convtr.weight": MLXMimiWeightTensor(
+                    shape: [1, 1920, 8],
+                    array: nil
+                ),
             ]
         )
         let applier = MLXMimiGraphParameterApplier(
             requiredKeys: [
                 "encoder_transformer.layers.0.self_attn.in_proj.weight",
                 "quantizer.rvq_first.input_proj.weight",
+                "decoder.layers.0.upsample.convtr.weight",
+                "upsample.convtr.weight",
             ],
             requiresArrayPayload: false
         )
@@ -61,12 +75,22 @@ struct MLXMimiGraphParameterTests {
                     shape: [4, 1, 8],
                     array: tinyArray(shape: [4, 1, 8])
                 ),
+                "decoder.layers.0.upsample.convtr.weight": MLXMimiWeightTensor(
+                    shape: [2, 4, 4],
+                    array: tinyArray(shape: [2, 4, 4])
+                ),
+                "upsample.convtr.weight": MLXMimiWeightTensor(
+                    shape: [1, 1920, 8],
+                    array: tinyArray(shape: [1, 1920, 8])
+                ),
             ]
         )
         let applier = MLXMimiGraphParameterApplier(
             requiredKeys: [
                 "encoder_transformer.layers.0.self_attn.in_proj.weight",
                 "quantizer.rvq_first.input_proj.weight",
+                "decoder.layers.0.upsample.convtr.weight",
+                "upsample.convtr.weight",
             ]
         )
 
@@ -77,6 +101,8 @@ struct MLXMimiGraphParameterTests {
                 == [24, 8]
         )
         #expect(model.quantizer.rvqFirst.inputProjection?.weight.shape == [4, 1, 8])
+        #expect(model.decoder.layers[0].upsample.convtr.convtr.weight.shape == [2, 4, 4])
+        #expect(model.upsample.convtr.convtr.convtr.weight.shape == [1, 1920, 8])
     }
 
     @Test("graph parameter applier reports missing incompatible and shape-only parameters")

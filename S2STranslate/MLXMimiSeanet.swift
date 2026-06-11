@@ -137,6 +137,61 @@ final class MLXMimiEncoderLayer {
     }
 }
 
+final class MLXMimiDecoderLayer {
+    var upsample: MLXMimiStreamableConvTranspose1d
+    var residuals: [MLXMimiSeanetResnetBlock]
+
+    init(_ configuration: MLXMimiSeanetConfiguration, ratio: Int, multiplier: Int) {
+        var residuals: [MLXMimiSeanetResnetBlock] = []
+        var dilation = 1
+        for _ in 0..<configuration.residualLayerCount {
+            residuals.append(
+                MLXMimiSeanetResnetBlock(
+                    configuration,
+                    dimension: multiplier * configuration.filterCount / 2,
+                    kernelSizesAndDilations: [
+                        (configuration.residualKernelSize, dilation),
+                        (1, 1),
+                    ]
+                )
+            )
+            dilation *= configuration.dilationBase
+        }
+
+        self.upsample = MLXMimiStreamableConvTranspose1d(
+            inputChannels: multiplier * configuration.filterCount,
+            outputChannels: multiplier * configuration.filterCount / 2,
+            kernelSize: ratio * 2,
+            stride: ratio,
+            groups: 1,
+            bias: true,
+            causal: configuration.causal
+        )
+        self.residuals = residuals
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        var x = upsample(elu(x, alpha: 1.0))
+        for residual in residuals {
+            x = residual(x)
+        }
+        return x
+    }
+
+    func resetState() {
+        upsample.resetState()
+        residuals.forEach { $0.resetState() }
+    }
+
+    func step(_ x: MLXMimiStreamArray) -> MLXMimiStreamArray {
+        var x = upsample.step(x.elu())
+        for residual in residuals {
+            x = residual.step(x)
+        }
+        return x
+    }
+}
+
 public final class MLXMimiSeanetEncoder {
     public let configuration: MLXMimiSeanetConfiguration
     var initConv1d: MLXMimiStreamableConv1d
@@ -202,8 +257,63 @@ public final class MLXMimiSeanetEncoder {
 
 public final class MLXMimiSeanetDecoder {
     public let configuration: MLXMimiSeanetConfiguration
+    var initConv1d: MLXMimiStreamableConv1d
+    var layers: [MLXMimiDecoderLayer]
+    var finalConv1d: MLXMimiStreamableConv1d
 
     nonisolated public init(_ configuration: MLXMimiSeanetConfiguration) {
         self.configuration = configuration
+        var multiplier = 1 << configuration.ratios.count
+        self.initConv1d = MLXMimiStreamableConv1d(
+            inputChannels: configuration.dimension,
+            outputChannels: multiplier * configuration.filterCount,
+            kernelSize: configuration.kernelSize,
+            stride: 1,
+            dilation: 1,
+            groups: 1,
+            bias: true,
+            causal: configuration.causal,
+            padMode: configuration.padMode
+        )
+
+        var layers: [MLXMimiDecoderLayer] = []
+        for ratio in configuration.ratios {
+            layers.append(MLXMimiDecoderLayer(configuration, ratio: ratio, multiplier: multiplier))
+            multiplier /= 2
+        }
+        self.layers = layers
+        self.finalConv1d = MLXMimiStreamableConv1d(
+            inputChannels: configuration.filterCount,
+            outputChannels: configuration.channels,
+            kernelSize: configuration.lastKernelSize,
+            stride: 1,
+            dilation: 1,
+            groups: 1,
+            bias: true,
+            causal: configuration.causal,
+            padMode: configuration.padMode
+        )
+    }
+
+    public func callAsFunction(_ x: MLXArray) -> MLXArray {
+        var x = initConv1d(x)
+        for layer in layers {
+            x = layer(x)
+        }
+        return finalConv1d(elu(x, alpha: 1.0))
+    }
+
+    public func resetState() {
+        initConv1d.resetState()
+        layers.forEach { $0.resetState() }
+        finalConv1d.resetState()
+    }
+
+    public func step(_ x: MLXMimiStreamArray) -> MLXMimiStreamArray {
+        var x = initConv1d.step(x)
+        for layer in layers {
+            x = layer.step(x)
+        }
+        return finalConv1d.step(x.elu())
     }
 }

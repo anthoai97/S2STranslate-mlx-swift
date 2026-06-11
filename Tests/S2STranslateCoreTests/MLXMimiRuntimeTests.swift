@@ -129,6 +129,20 @@ struct MLXMimiRuntimeTests {
         #expect(extractionCallCount == 1)
     }
 
+    @Test("default runtime engine runs executable decode graph")
+    func defaultRuntimeEngineRunsExecutableDecodeGraph() throws {
+        let engine = MLXMimiDefaultRuntimeEngine()
+
+        let chunks = try engine.decode(
+            MLXMimiTokenInput(
+                tokens: Array(repeating: 0, count: 16),
+                codebookCount: 16
+            )
+        )
+
+        #expect(chunks.count <= 1)
+    }
+
     @Test("token frame extractor preserves codebook count and frame order")
     func tokenFrameExtractorPreservesCodebookCountAndFrameOrder() throws {
         let extractor = MLXMimiTokenFrameExtractor(codebookCount: 3)
@@ -161,6 +175,41 @@ struct MLXMimiRuntimeTests {
                 flattenedTokens: [1, 2, 3],
                 shape: [1, 3, 1]
             )
+        }
+    }
+
+    @Test("Mimi token input builder validates and shapes decode tokens")
+    func mimiTokenInputBuilderValidatesAndShapesDecodeTokens() throws {
+        let builder = MLXMimiTokenInputBuilder()
+
+        let stream = try builder.stream(
+            from: MLXMimiTokenInput(tokens: [1, 2, 3], codebookCount: 3)
+        )
+
+        #expect(stream.shape == [1, 3, 1])
+        #expect(
+            throws: MimiRuntimeError.loadFailed(
+                "Mimi token input malformed: expected 3 tokens, got 2"
+            )
+        ) {
+            _ = try builder.stream(from: MLXMimiTokenInput(tokens: [1, 2], codebookCount: 3))
+        }
+    }
+
+    @Test("Mimi decoded chunk extractor validates PCM output shape")
+    func mimiDecodedChunkExtractorValidatesPCMOutputShape() throws {
+        let extractor = MLXMimiDecodedChunkExtractor()
+
+        let chunks = try extractor.chunks(flattenedSamples: [0.1, -0.2], shape: [1, 1, 2])
+
+        #expect(chunks == [MLXMimiDecodedChunk(samples: [0.1, -0.2])])
+        #expect(try extractor.chunks(flattenedSamples: [], shape: [1, 1, 0]).isEmpty)
+        #expect(
+            throws: MimiRuntimeError.loadFailed(
+                "Mimi decoded PCM channel unsupported: expected 1, got 2"
+            )
+        ) {
+            _ = try extractor.chunks(flattenedSamples: [0.1, -0.2], shape: [1, 2, 1])
         }
     }
 

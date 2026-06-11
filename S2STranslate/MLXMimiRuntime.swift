@@ -120,7 +120,9 @@ public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
     private let inputBuilder: (MLXMimiPCMInput) throws -> MLXMimiStreamArray
     private let encodeGraphStep: (MLXMimiStreamArray) throws -> MLXMimiStreamArray
     private let tokenExtractor: (MLXMimiStreamArray) throws -> [MLXMimiEncodedFrame]
-    private let decodeGraphStep: (MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk]
+    private let decodeInputBuilder: (MLXMimiTokenInput) throws -> MLXMimiStreamArray
+    private let decodeGraphStep: (MLXMimiStreamArray) throws -> MLXMimiStreamArray
+    private let decodedChunkExtractor: (MLXMimiStreamArray) throws -> [MLXMimiDecodedChunk]
 
     public init(model: MLXMimiModel = MLXMimiModel()) {
         self.model = model
@@ -138,8 +140,17 @@ public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
                 codebookCount: model.configuration.quantizerCodebookCount
             ).frames(from: stream)
         }
-        self.decodeGraphStep = { _ in
-            throw MimiRuntimeError.loadFailed("Mimi decode graph not implemented")
+        self.decodeInputBuilder = { input in
+            try MLXMimiTokenInputBuilder().stream(from: input)
+        }
+        self.decodeGraphStep = { [model] codes in
+            var stream = codes.map { model.quantizer.decode($0) }
+            stream = model.upsample.step(stream)
+            stream = model.decoderTransformer.step(stream, cache: model.decoderTransformerCache)
+            return model.decoder.step(stream)
+        }
+        self.decodedChunkExtractor = { stream in
+            try MLXMimiDecodedChunkExtractor().chunks(from: stream)
         }
     }
 
@@ -148,13 +159,17 @@ public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
         inputBuilder: @escaping (MLXMimiPCMInput) throws -> MLXMimiStreamArray,
         encodeGraphStep: @escaping (MLXMimiStreamArray) throws -> MLXMimiStreamArray,
         tokenExtractor: @escaping (MLXMimiStreamArray) throws -> [MLXMimiEncodedFrame],
-        decodeGraphStep: @escaping (MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] = { _ in [] }
+        decodeInputBuilder: @escaping (MLXMimiTokenInput) throws -> MLXMimiStreamArray = { _ in MLXMimiStreamArray() },
+        decodeGraphStep: @escaping (MLXMimiStreamArray) throws -> MLXMimiStreamArray = { _ in MLXMimiStreamArray() },
+        decodedChunkExtractor: @escaping (MLXMimiStreamArray) throws -> [MLXMimiDecodedChunk] = { _ in [] }
     ) {
         self.model = model
         self.inputBuilder = inputBuilder
         self.encodeGraphStep = encodeGraphStep
         self.tokenExtractor = tokenExtractor
+        self.decodeInputBuilder = decodeInputBuilder
         self.decodeGraphStep = decodeGraphStep
+        self.decodedChunkExtractor = decodedChunkExtractor
     }
 
     public func resetEncodeState() {
@@ -177,7 +192,25 @@ public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
     }
 
     public func decode(_ input: MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] {
-        try decodeGraphStep(input)
+        let codes = try decodeInputBuilder(input)
+        let pcm = try decodeGraphStep(codes)
+        return try decodedChunkExtractor(pcm)
+    }
+}
+
+struct MLXMimiTokenInputBuilder {
+    func stream(from input: MLXMimiTokenInput) throws -> MLXMimiStreamArray {
+        guard input.codebookCount > 0 else {
+            throw MimiRuntimeError.loadFailed("Mimi token input codebooks malformed: expected positive count")
+        }
+        guard input.tokens.count == input.codebookCount else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi token input malformed: expected \(input.codebookCount) tokens, got \(input.tokens.count)"
+            )
+        }
+
+        let tokens = input.tokens.map(Int32.init)
+        return MLXMimiStreamArray(MLXArray(tokens).reshaped([1, input.codebookCount, 1]))
     }
 }
 
@@ -222,6 +255,38 @@ struct MLXMimiTokenFrameExtractor {
             }
             return MLXMimiEncodedFrame(tokens: tokens)
         }
+    }
+}
+
+struct MLXMimiDecodedChunkExtractor {
+    func chunks(from stream: MLXMimiStreamArray) throws -> [MLXMimiDecodedChunk] {
+        guard let array = stream.asArray() else { return [] }
+        return try chunks(flattenedSamples: array.asArray(Float.self), shape: array.shape)
+    }
+
+    func chunks(flattenedSamples: [Float], shape: [Int]) throws -> [MLXMimiDecodedChunk] {
+        guard shape.count == 3 else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi decoded PCM shape malformed: expected [batch, channel, time], got \(shape)"
+            )
+        }
+        guard shape[0] == 1 else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi decoded PCM batch unsupported: expected 1, got \(shape[0])"
+            )
+        }
+        guard shape[1] == 1 else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi decoded PCM channel unsupported: expected 1, got \(shape[1])"
+            )
+        }
+        guard flattenedSamples.count == shape.reduce(1, *) else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi decoded PCM buffer malformed: expected \(shape.reduce(1, *)) samples, got \(flattenedSamples.count)"
+            )
+        }
+        guard shape[2] > 0 else { return [] }
+        return [MLXMimiDecodedChunk(samples: flattenedSamples)]
     }
 }
 

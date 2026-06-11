@@ -1,6 +1,6 @@
 # Implement MLX Mimi Streaming Decode
 
-Status: in-progress
+Status: done
 
 ## Parent
 
@@ -12,9 +12,9 @@ Replace the deterministic Mimi decoder in the real translation path with an MLX-
 
 ## Acceptance criteria
 
-- [ ] A real `MimiStreamingDecoder` implementation wraps the loaded Mimi runtime.
+- [x] A real `MimiStreamingDecoder` implementation wraps the loaded Mimi runtime.
 - [x] Update `MimiStreamingDecoder.decode(_:)` to return `[DecodedAudioChunk]` so real streaming decode can emit zero, one, or multiple chunks per token frame.
-- [ ] Generated audio token frames decode incrementally without resetting decoder state.
+- [x] Generated audio token frames decode incrementally without resetting decoder state.
 - [x] Empty `StreamArray` outputs are handled without sending silence or placeholder chunks to playback.
 - [x] Decoded chunks preserve sample rate, frame index, timestamp, duration, and source token-frame metadata.
 - [x] Decode failures surface through `MimiDecodeError` and the Experiment Session failure path.
@@ -27,9 +27,10 @@ Replace the deterministic Mimi decoder in the real translation path with an MLX-
 - Follow `ref/moshi-swift/MoshiLib/Mimi.swift` for decode state behavior.
 - Keep `DeterministicMimiStreamingDecoder` available for fast tests.
 - Do not send invented silence to playback when the decoder has not produced PCM yet.
-- Current checkpoint lands the protocol/runtime boundary and test seams. The remaining work is the executable MLX Mimi decode graph: quantizer decode, upsample, decoder transformer, and Seanet decoder.
+- Implemented the executable MLX decode graph path: token input shaping, quantizer decode, streaming upsample, decoder transformer cache use, Seanet decoder, decoded PCM extraction, and decoder/upsample weight targets.
+- Verified with `swift test --filter MLXMimiRuntime`, `swift test --filter MLXMimiQuantization`, `swift test --filter MLXMimiGraphParameter`, full `swift test`, and `xcodebuild build -project S2STranslate.xcodeproj -scheme S2STranslate -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO`.
 
-## Blocked by
+## Was blocked by
 
 - `.scratch/hibiki-ios-mlx/issues/16-validate-mimi-runtime-metadata-and-warmup.md`
 - `.scratch/hibiki-ios-mlx/issues/23-implement-hibiki-token-sampling-and-text-output.md`

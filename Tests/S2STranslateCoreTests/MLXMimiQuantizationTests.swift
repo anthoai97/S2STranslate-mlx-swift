@@ -68,4 +68,20 @@ struct MLXMimiQuantizationTests {
         #expect(quantizer.rvqFirst.vq.layers[0].codebook.embeddingShape == [2_048, 256])
         #expect(quantizer.rvqRest.vq.layers[14].codebook.embeddingShape == [2_048, 256])
     }
+
+    @Test("split residual quantizer decode returns conv layout")
+    func splitResidualQuantizerDecodeReturnsConvLayout() {
+        let quantizer = MLXMimiSplitResidualVectorQuantizer(
+            dimension: 2,
+            inputDimension: 4,
+            outputDimension: 4,
+            codebookCount: 2,
+            bins: 3
+        )
+        let codes = MLXArray(Array(repeating: Int32(0), count: 6)).reshaped([1, 2, 3])
+
+        let decoded = quantizer.decode(codes)
+
+        #expect(decoded.shape == [1, 4, 3])
+    }
 }

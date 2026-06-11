@@ -64,7 +64,9 @@ public struct MLXMimiGraphParameterApplier {
     private static func targets(for model: MLXMimiModel) -> [String: MLXMimiGraphParameterTarget] {
         var targets: [MLXMimiGraphParameterTarget] = []
         appendEncoderTargets(prefix: "encoder", encoder: model.encoder, to: &targets)
+        appendDecoderTargets(prefix: "decoder", decoder: model.decoder, to: &targets)
         appendDownsampleTargets(prefix: "downsample", downsample: model.downsample, to: &targets)
+        appendUpsampleTargets(prefix: "upsample", upsample: model.upsample, to: &targets)
         appendProjectedTransformerTargets(
             prefix: "encoder_transformer",
             projectedTransformer: model.encoderTransformer,
@@ -103,6 +105,29 @@ public struct MLXMimiGraphParameterApplier {
         appendStreamableConvTargets(prefix: "\(prefix).final_conv1d", conv: encoder.finalConv1d, to: &targets)
     }
 
+    private static func appendDecoderTargets(
+        prefix: String,
+        decoder: MLXMimiSeanetDecoder,
+        to targets: inout [MLXMimiGraphParameterTarget]
+    ) {
+        appendStreamableConvTargets(prefix: "\(prefix).init_conv1d", conv: decoder.initConv1d, to: &targets)
+        for (layerIndex, layer) in decoder.layers.enumerated() {
+            appendStreamableConvTransposeTargets(
+                prefix: "\(prefix).layers.\(layerIndex).upsample",
+                conv: layer.upsample,
+                to: &targets
+            )
+            for (residualIndex, residual) in layer.residuals.enumerated() {
+                appendResnetBlockTargets(
+                    prefix: "\(prefix).layers.\(layerIndex).residuals.\(residualIndex)",
+                    block: residual,
+                    to: &targets
+                )
+            }
+        }
+        appendStreamableConvTargets(prefix: "\(prefix).final_conv1d", conv: decoder.finalConv1d, to: &targets)
+    }
+
     private static func appendResnetBlockTargets(
         prefix: String,
         block: MLXMimiSeanetResnetBlock,
@@ -124,6 +149,14 @@ public struct MLXMimiGraphParameterApplier {
         appendStreamableConvTargets(prefix: prefix, conv: downsample.conv, to: &targets)
     }
 
+    private static func appendUpsampleTargets(
+        prefix: String,
+        upsample: MLXMimiConvTrUpsample1d,
+        to targets: inout [MLXMimiGraphParameterTarget]
+    ) {
+        appendStreamableConvTransposeTargets(prefix: prefix, conv: upsample.convtr, to: &targets)
+    }
+
     private static func appendStreamableConvTargets(
         prefix: String,
         conv: MLXMimiStreamableConv1d,
@@ -135,6 +168,37 @@ public struct MLXMimiGraphParameterApplier {
     private static func appendConvTargets(
         prefix: String,
         conv: MLXMimiConv1d,
+        to targets: inout [MLXMimiGraphParameterTarget]
+    ) {
+        targets.append(
+            MLXMimiGraphParameterTarget(
+                key: "\(prefix).weight",
+                expectedShape: conv.weightShape,
+                assign: { conv.weight = $0 }
+            )
+        )
+        if let biasShape = conv.biasShape {
+            targets.append(
+                MLXMimiGraphParameterTarget(
+                    key: "\(prefix).bias",
+                    expectedShape: biasShape,
+                    assign: { conv.bias = $0 }
+                )
+            )
+        }
+    }
+
+    private static func appendStreamableConvTransposeTargets(
+        prefix: String,
+        conv: MLXMimiStreamableConvTranspose1d,
+        to targets: inout [MLXMimiGraphParameterTarget]
+    ) {
+        appendConvTransposeTargets(prefix: "\(prefix).convtr", conv: conv.convtr.convtr, to: &targets)
+    }
+
+    private static func appendConvTransposeTargets(
+        prefix: String,
+        conv: MLXMimiConvTransposed1d,
         to targets: inout [MLXMimiGraphParameterTarget]
     ) {
         targets.append(

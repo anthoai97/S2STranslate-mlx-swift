@@ -209,6 +209,7 @@ public final class MLXMimiModel {
     public func resetDecodeState() {
         MLXMimiProjectedTransformer.resetCache(decoderTransformerCache)
         upsample.resetState()
+        decoder.resetState()
     }
 
     public func resetState() {
