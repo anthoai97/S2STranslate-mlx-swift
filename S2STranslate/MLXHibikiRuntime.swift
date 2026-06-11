@@ -151,14 +151,17 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
 public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked Sendable {
     private let runtimeConfiguration: MLXHibikiRuntimeConfiguration
     private let engine: MLXHibikiRuntimeEngine
+    private let textTokenDecoder: any HibikiTextTokenDecoding
     private let state = Mutex(MLXHibikiInferenceState())
 
     public init(
         runtimeConfiguration: MLXHibikiRuntimeConfiguration = MLXHibikiRuntimeConfiguration(),
-        engine: MLXHibikiRuntimeEngine = MLXHibikiDefaultRuntimeEngine()
+        engine: MLXHibikiRuntimeEngine = MLXHibikiDefaultRuntimeEngine(),
+        textTokenDecoder: any HibikiTextTokenDecoding = EmptyHibikiTextTokenDecoder()
     ) {
         self.runtimeConfiguration = runtimeConfiguration
         self.engine = engine
+        self.textTokenDecoder = textTokenDecoder
     }
 
     public func initialize(
@@ -221,7 +224,7 @@ public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked
         let text = HibikiTextOutput(
             frameIndex: frameIndex,
             token: output.textToken,
-            piece: output.textPiece,
+            piece: output.textPiece ?? textTokenDecoder.piece(for: output.textToken),
             candidateTokens: output.textCandidateTokens
         )
         let generatedAudio = MimiTokenFrame(

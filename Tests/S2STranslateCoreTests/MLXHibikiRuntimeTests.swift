@@ -43,6 +43,43 @@ struct MLXHibikiRuntimeTests {
         #expect(step.generatedAudioTokens.tokens == Array(700..<716))
     }
 
+    @Test("MLX Hibiki session decodes text tokens through tokenizer seam")
+    func mlxHibikiSessionDecodesTextTokensThroughTokenizerSeam() async throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let engine = RecordingHibikiRuntimeEngine(
+            outputs: [
+                MLXHibikiStepOutput(
+                    textToken: 42,
+                    textCandidateTokens: [42, 0],
+                    audioTokens: Array(700..<716)
+                ),
+                MLXHibikiStepOutput(
+                    textToken: 3,
+                    textCandidateTokens: [3],
+                    audioTokens: Array(716..<732)
+                ),
+            ]
+        )
+        let session = MLXHibikiInferenceSession(
+            engine: engine,
+            textTokenDecoder: DictionaryHibikiTextTokenDecoder(piecesByToken: [42: "\u{2581}hello"])
+        )
+
+        _ = try await session.initialize(
+            artifacts: artifacts,
+            configuration: HibikiGenerationConfiguration()
+        )
+        let visible = try await session.step(sourceAudioTokens: sourceTokenFrame(frameIndex: 0))
+        let skipped = try await session.step(sourceAudioTokens: sourceTokenFrame(frameIndex: 1))
+
+        #expect(visible.text.piece == " hello")
+        #expect(visible.text.isVisible)
+        #expect(visible.text.candidateTokens == [42, 0])
+        #expect(skipped.text.piece == nil)
+        #expect(skipped.text.isBlankOrPadding)
+        #expect(!skipped.text.isVisible)
+    }
+
     @Test("MLX Hibiki default engine validates q4 architecture metadata")
     func mlxHibikiDefaultEngineValidatesQ4ArchitectureMetadata() throws {
         let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
@@ -201,7 +238,7 @@ private final class RecordingHibikiRuntimeEngine: MLXHibikiRuntimeEngine {
 
     var loadRequests: [MLXHibikiLoadRequest] = []
     var stepRequests: [StepRequest] = []
-    var output: MLXHibikiStepOutput
+    var outputs: [MLXHibikiStepOutput]
 
     init(
         output: MLXHibikiStepOutput = MLXHibikiStepOutput(
@@ -209,7 +246,11 @@ private final class RecordingHibikiRuntimeEngine: MLXHibikiRuntimeEngine {
             audioTokens: Array(repeating: 0, count: 16)
         )
     ) {
-        self.output = output
+        self.outputs = [output]
+    }
+
+    init(outputs: [MLXHibikiStepOutput]) {
+        self.outputs = outputs
     }
 
     func load(request: MLXHibikiLoadRequest) throws {
@@ -228,7 +269,16 @@ private final class RecordingHibikiRuntimeEngine: MLXHibikiRuntimeEngine {
                 configuration: configuration
             )
         )
-        return output
+        if outputs.isEmpty {
+            return MLXHibikiStepOutput(
+                textToken: 0,
+                audioTokens: Array(repeating: 0, count: 16)
+            )
+        }
+        if outputs.count == 1 {
+            return outputs[0]
+        }
+        return outputs.removeFirst()
     }
 
     func reset() {

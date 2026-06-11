@@ -25,7 +25,7 @@ Complete the real Hibiki generation loop around the MLX model step. The session 
 
 - Keep voice transfer disabled until a real supported control is implemented.
 - This issue should not implement audio playback; it should only emit generated audio token frames to the existing decode path.
-- Current checkpoint preserves the `0.8`/top-k `250` default configuration surface and adds opt-in file tail flushing: after source input ends the backend can feed silence frames and stop after sustained blank/pad text tokens (`0`/`3`), matching the Python reference's `PAD_STOP` behavior. Full logits sampling and real tokenizer decoding remain.
+- Current checkpoint preserves the `0.8`/top-k `250` default configuration surface, adds a tokenizer-decoding seam that normalizes SentencePiece word markers for visible text, and adds opt-in file tail flushing: after source input ends the backend can feed silence frames and stop after sustained blank/pad text tokens (`0`/`3`), matching the Python reference's `PAD_STOP` behavior. Full logits sampling and real SentencePiece loading remain.
 
 ## Blocked by
 

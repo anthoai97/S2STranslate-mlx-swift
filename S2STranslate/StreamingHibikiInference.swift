@@ -68,7 +68,7 @@ public struct HibikiTextOutput: Equatable, Sendable {
     }
 
     public var isBlankOrPadding: Bool {
-        token == 0 || token == 3
+        HibikiTextTokenContract.isBlankOrPadding(token)
     }
 
     public var referenceTraceEvent: ReferenceTraceEvent {
@@ -78,6 +78,46 @@ public struct HibikiTextOutput: Equatable, Sendable {
             frameIndex: frameIndex,
             tokens: [token]
         )
+    }
+}
+
+public enum HibikiTextTokenContract {
+    public static let blankOrPaddingTokens: Set<Int> = [0, 3]
+
+    public static func isBlankOrPadding(_ token: Int) -> Bool {
+        blankOrPaddingTokens.contains(token)
+    }
+
+    public static func normalizeSentencePiece(_ piece: String) -> String {
+        piece.replacingOccurrences(of: "\u{2581}", with: " ")
+    }
+}
+
+public protocol HibikiTextTokenDecoding: Sendable {
+    func piece(for token: Int) -> String?
+}
+
+public struct EmptyHibikiTextTokenDecoder: HibikiTextTokenDecoding {
+    public init() {}
+
+    public func piece(for token: Int) -> String? {
+        nil
+    }
+}
+
+public struct DictionaryHibikiTextTokenDecoder: HibikiTextTokenDecoding {
+    private let piecesByToken: [Int: String]
+
+    public init(piecesByToken: [Int: String]) {
+        self.piecesByToken = piecesByToken
+    }
+
+    public func piece(for token: Int) -> String? {
+        guard !HibikiTextTokenContract.isBlankOrPadding(token),
+              let piece = piecesByToken[token] else {
+            return nil
+        }
+        return HibikiTextTokenContract.normalizeSentencePiece(piece)
     }
 }
 
