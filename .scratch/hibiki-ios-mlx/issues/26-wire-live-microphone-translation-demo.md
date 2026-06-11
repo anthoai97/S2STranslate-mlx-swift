@@ -23,4 +23,4 @@ This slice should keep automated coverage focused on simulated sources while doc
 
 ## Blocked by
 
-- `.scratch/hibiki-ios-mlx/issues/19-run-real-file-based-french-to-english-smoke-test.md`
+- `.scratch/hibiki-ios-mlx/issues/25-run-real-file-based-french-to-english-smoke-test.md`

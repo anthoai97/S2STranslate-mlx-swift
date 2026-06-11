@@ -31,5 +31,4 @@ This slice should focus on model construction, cache/state setup, and one-step e
 ## Blocked by
 
 - `.scratch/hibiki-ios-mlx/issues/12-implement-real-huggingface-artifact-download-cache.md`
-- `.scratch/hibiki-ios-mlx/issues/14-implement-mlx-mimi-streaming-encode.md`
-
+- `.scratch/hibiki-ios-mlx/issues/17-implement-mlx-mimi-streaming-encode.md`

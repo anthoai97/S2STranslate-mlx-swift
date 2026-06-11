@@ -28,5 +28,4 @@ Complete the real Hibiki generation loop around the MLX model step. The session 
 
 ## Blocked by
 
-- `.scratch/hibiki-ios-mlx/issues/15-implement-mlx-hibiki-model-load-and-step.md`
-
+- `.scratch/hibiki-ios-mlx/issues/22-implement-mlx-hibiki-model-load-and-step.md`

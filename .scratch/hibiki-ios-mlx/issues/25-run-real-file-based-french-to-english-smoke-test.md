@@ -31,8 +31,7 @@ This is the first end-to-end real translation smoke test.
 ## Blocked by
 
 - `.scratch/hibiki-ios-mlx/issues/12-implement-real-huggingface-artifact-download-cache.md`
-- `.scratch/hibiki-ios-mlx/issues/14-implement-mlx-mimi-streaming-encode.md`
-- `.scratch/hibiki-ios-mlx/issues/16-implement-hibiki-token-sampling-and-text-output.md`
-- `.scratch/hibiki-ios-mlx/issues/17-implement-mlx-mimi-streaming-decode.md`
-- `.scratch/hibiki-ios-mlx/issues/18-add-av-audio-playback-sink.md`
-
+- `.scratch/hibiki-ios-mlx/issues/17-implement-mlx-mimi-streaming-encode.md`
+- `.scratch/hibiki-ios-mlx/issues/23-implement-hibiki-token-sampling-and-text-output.md`
+- `.scratch/hibiki-ios-mlx/issues/18-implement-mlx-mimi-streaming-decode.md`
+- `.scratch/hibiki-ios-mlx/issues/24-add-av-audio-playback-sink.md`

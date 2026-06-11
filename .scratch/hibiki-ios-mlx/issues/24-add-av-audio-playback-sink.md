@@ -28,5 +28,4 @@ Add a device-capable playback sink behind the existing `PlaybackSink` protocol. 
 ## Blocked by
 
 - `.scratch/hibiki-ios-mlx/issues/07-implement-mimi-streaming-decode-and-playback-path.md`
-- `.scratch/hibiki-ios-mlx/issues/17-implement-mlx-mimi-streaming-decode.md`
-
+- `.scratch/hibiki-ios-mlx/issues/18-implement-mlx-mimi-streaming-decode.md`

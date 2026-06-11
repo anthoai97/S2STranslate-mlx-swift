@@ -24,5 +24,5 @@ The documentation should make it clear that this repo is an experimentation harn
 
 ## Blocked by
 
-- `.scratch/hibiki-ios-mlx/issues/19-run-real-file-based-french-to-english-smoke-test.md`
-- `.scratch/hibiki-ios-mlx/issues/20-wire-live-microphone-translation-demo.md`
+- `.scratch/hibiki-ios-mlx/issues/25-run-real-file-based-french-to-english-smoke-test.md`
+- `.scratch/hibiki-ios-mlx/issues/26-wire-live-microphone-translation-demo.md`

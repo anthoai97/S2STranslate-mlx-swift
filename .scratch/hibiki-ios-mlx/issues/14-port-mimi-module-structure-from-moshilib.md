@@ -1,0 +1,34 @@
+# Port Mimi Module Structure From MoshiLib
+
+Status: ready-for-agent
+
+## Parent
+
+`.scratch/hibiki-ios-mlx/PRD.md`
+
+## What to build
+
+Port the Mimi model structure needed to construct an MLX Mimi Runtime from the Moshi Swift reference. This issue should create the model classes and configuration shape, but it should not load real safetensors or wire encode/decode into the app flow yet.
+
+The goal is to make the repo own the Mimi architecture boundary while keeping `ref/moshi-swift` as implementation provenance.
+
+## Acceptance criteria
+
+- [ ] Port or adapt the Mimi configuration shape from `ref/moshi-swift/MoshiLib/Mimi.swift`.
+- [ ] Add repo-owned MLX module shells for the Mimi encoder path, decoder path, transformer path, downsample/upsample path, and quantizer path.
+- [ ] The module structure can be instantiated with the default 2024-07 configuration for `16` codebooks.
+- [ ] The module structure preserves the expected codec metadata: mono `24 kHz`, `12.5 Hz`, `1920` samples per frame, `2048` quantizer bins, and `16` codebooks.
+- [ ] The deterministic encoder/decoder remain default in UI and tests.
+- [ ] Tests cover configuration construction and module-shell instantiation without requiring full safetensors load.
+- [ ] Porting notes call out any deliberate divergence from MoshiLib naming, shapes, or state ownership.
+- [ ] The first pass keeps ported internals close to MoshiLib for traceability; app-specific shaping happens at the `MLXMimiRuntime` boundary.
+
+## Notes
+
+- Follow `ref/moshi-swift/MoshiLib/Mimi.swift`, `Streaming.swift`, `Seanet.swift`, `Conv.swift`, `Transformer.swift`, and `Quantization.swift`.
+- Do not implement real `MimiStreamingEncoder.encode` or `MimiStreamingDecoder.decode` in this issue.
+- Prefer a close, debuggable port over a Swifty refactor in this issue. Refactor only after the runtime loads and passes smoke tests.
+
+## Blocked by
+
+- `.scratch/hibiki-ios-mlx/issues/13-add-mlx-swift-dependency-and-mimi-runtime-shell.md`

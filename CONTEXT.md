@@ -64,6 +64,14 @@ _Avoid_: PCM frame, decoded audio frame
 The stateful decode component that accepts Mimi Token Frames and emits Decoded Audio Chunks while preserving output frame index across token boundaries. The current implementation is deterministic and protocol-backed; the future MLX-backed Mimi decoder should conform to the same boundary.
 _Avoid_: Batch decoder, audio player
 
+**MLX Mimi Runtime**:
+The loaded MLX-backed Mimi codec object that owns model weights, codec configuration, and streaming encode/decode state needed by MLX-backed Mimi Streaming Encoder and Mimi Streaming Decoder implementations.
+_Avoid_: MoshiLib dependency, model artifact, deterministic codec
+
+**Mimi Runtime Error**:
+A preparation-time failure while locating, validating, or constructing the MLX Mimi Runtime. It is distinct from Mimi encode/decode stream failures, which happen after a runtime has already been accepted for use.
+_Avoid_: Encode error, decode error, artifact preparation error
+
 **Decoded Audio Chunk**:
 A bounded slice of PCM samples produced by Mimi decoding, with sample rate, frame index, timestamp, and source token frame metadata. It is the output boundary before playback.
 _Avoid_: Mimi token, source PCM chunk
