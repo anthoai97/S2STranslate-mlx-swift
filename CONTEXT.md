@@ -68,6 +68,10 @@ _Avoid_: Batch decoder, audio player
 The loaded MLX-backed Mimi codec object that owns model weights, codec configuration, and streaming encode/decode state needed by MLX-backed Mimi Streaming Encoder and Mimi Streaming Decoder implementations.
 _Avoid_: MoshiLib dependency, model artifact, deterministic codec
 
+**Mimi Encode Graph**:
+The internal MLX Mimi Runtime path that turns streaming PCM arrays into source Mimi token arrays. It is distinct from the public Mimi Streaming Encoder boundary that accepts PCM Chunks and emits Mimi Token Frames.
+_Avoid_: Runtime, encoder, adapter
+
 **Mimi Runtime Error**:
 A preparation-time failure while locating, validating, or constructing the MLX Mimi Runtime. It is distinct from Mimi encode/decode stream failures, which happen after a runtime has already been accepted for use.
 _Avoid_: Encode error, decode error, artifact preparation error

@@ -12,6 +12,14 @@ struct MLXMimiWeightLoadingTests {
                 == "encoder.init_conv1d.conv.weight"
         )
         #expect(
+            MLXMimiWeightKeyMapper.map("encoder.model.0.conv.conv.weight")
+                == "encoder.init_conv1d.conv.weight"
+        )
+        #expect(
+            MLXMimiWeightKeyMapper.map("downsample.conv.conv.conv.weight")
+                == "downsample.conv.weight"
+        )
+        #expect(
             MLXMimiWeightKeyMapper.map("encoder.model.1.block.1.conv.weight")
                 == "encoder.layers.0.residuals.0.block.0.conv.weight"
         )
@@ -24,11 +32,23 @@ struct MLXMimiWeightLoadingTests {
                 == "decoder.layers.0.upsample.convtr.weight"
         )
         #expect(
+            MLXMimiWeightKeyMapper.map("decoder.model.2.convtr.convtr.weight")
+                == "decoder.layers.0.upsample.convtr.weight"
+        )
+        #expect(
+            MLXMimiWeightKeyMapper.map("upsample.convtr.convtr.convtr.weight")
+                == "upsample.convtr.weight"
+        )
+        #expect(
             MLXMimiWeightKeyMapper.map("decoder.model.3.block.3.conv.weight")
                 == "decoder.layers.0.residuals.0.block.1.conv.weight"
         )
         #expect(
             MLXMimiWeightKeyMapper.map("encoder_transformer.layers.0.self_attn.in_proj_weight")
+                == "encoder_transformer.layers.0.self_attn.in_proj.weight"
+        )
+        #expect(
+            MLXMimiWeightKeyMapper.map("encoder_transformer.transformer.layers.0.self_attn.in_proj_weight")
                 == "encoder_transformer.layers.0.self_attn.in_proj.weight"
         )
         #expect(

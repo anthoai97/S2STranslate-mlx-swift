@@ -16,6 +16,16 @@ public enum MLXMimiPositionalEmbedding: Equatable, Sendable {
 
 public enum MLXMimiPadMode: Equatable, Sendable {
     case constant
+    case edge
+
+    var mlxPadMode: PadMode {
+        switch self {
+        case .constant:
+            .constant
+        case .edge:
+            .edge
+        }
+    }
 }
 
 public struct MLXMimiSeanetConfiguration: Equatable, Sendable {
@@ -148,6 +158,8 @@ public final class MLXMimiModel {
     public let decoder: MLXMimiSeanetDecoder
     public let encoderTransformer: MLXMimiProjectedTransformer
     public let decoderTransformer: MLXMimiProjectedTransformer
+    public let encoderTransformerCache: [MLXMimiKVCache]
+    public let decoderTransformerCache: [MLXMimiKVCache]
     public let downsample: MLXMimiConvDownsample1d
     public let upsample: MLXMimiConvTrUpsample1d
     public let quantizer: MLXMimiSplitResidualVectorQuantizer
@@ -167,6 +179,8 @@ public final class MLXMimiModel {
             inputDimension: configuration.seanet.dimension,
             outputDimensions: [configuration.seanet.dimension]
         )
+        self.encoderTransformerCache = encoderTransformer.makeCache(batchSize: batchSize)
+        self.decoderTransformerCache = decoderTransformer.makeCache(batchSize: batchSize)
         self.downsample = MLXMimiConvDownsample1d(
             stride: configuration.downsampleStride,
             dimension: configuration.seanet.dimension,
@@ -186,90 +200,19 @@ public final class MLXMimiModel {
         )
     }
 
-    public func resetEncodeState() {}
+    public func resetEncodeState() {
+        encoder.resetState()
+        MLXMimiProjectedTransformer.resetCache(encoderTransformerCache)
+        downsample.resetState()
+    }
 
-    public func resetDecodeState() {}
+    public func resetDecodeState() {
+        MLXMimiProjectedTransformer.resetCache(decoderTransformerCache)
+        upsample.resetState()
+    }
 
     public func resetState() {
         resetEncodeState()
         resetDecodeState()
-    }
-}
-
-public final class MLXMimiSeanetEncoder {
-    public let configuration: MLXMimiSeanetConfiguration
-
-    nonisolated public init(_ configuration: MLXMimiSeanetConfiguration) {
-        self.configuration = configuration
-    }
-}
-
-public final class MLXMimiSeanetDecoder {
-    public let configuration: MLXMimiSeanetConfiguration
-
-    nonisolated public init(_ configuration: MLXMimiSeanetConfiguration) {
-        self.configuration = configuration
-    }
-}
-
-public final class MLXMimiProjectedTransformer {
-    public let configuration: MLXMimiTransformerConfiguration
-    public let inputDimension: Int
-    public let outputDimensions: [Int]
-
-    nonisolated public init(
-        _ configuration: MLXMimiTransformerConfiguration,
-        inputDimension: Int,
-        outputDimensions: [Int]
-    ) {
-        self.configuration = configuration
-        self.inputDimension = inputDimension
-        self.outputDimensions = outputDimensions
-    }
-}
-
-public final class MLXMimiConvDownsample1d {
-    public let stride: Int
-    public let dimension: Int
-    public let causal: Bool
-
-    nonisolated public init(stride: Int, dimension: Int, causal: Bool) {
-        self.stride = stride
-        self.dimension = dimension
-        self.causal = causal
-    }
-}
-
-public final class MLXMimiConvTrUpsample1d {
-    public let stride: Int
-    public let dimension: Int
-    public let causal: Bool
-
-    nonisolated public init(stride: Int, dimension: Int, causal: Bool) {
-        self.stride = stride
-        self.dimension = dimension
-        self.causal = causal
-    }
-}
-
-public final class MLXMimiSplitResidualVectorQuantizer {
-    public let dimension: Int
-    public let inputDimension: Int
-    public let outputDimension: Int
-    public let codebookCount: Int
-    public let bins: Int
-
-    nonisolated public init(
-        dimension: Int,
-        inputDimension: Int,
-        outputDimension: Int,
-        codebookCount: Int,
-        bins: Int
-    ) {
-        self.dimension = dimension
-        self.inputDimension = inputDimension
-        self.outputDimension = outputDimension
-        self.codebookCount = codebookCount
-        self.bins = bins
     }
 }

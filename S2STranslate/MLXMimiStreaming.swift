@@ -1,4 +1,5 @@
 import MLX
+import MLXNN
 
 public final class MLXMimiStreamArray {
     private let inner: MLXArray?
@@ -72,5 +73,38 @@ public final class MLXMimiStreamArray {
     public func map(_ transform: (MLXArray) -> MLXArray) -> MLXMimiStreamArray {
         guard let inner else { return MLXMimiStreamArray() }
         return MLXMimiStreamArray(transform(inner))
+    }
+
+    public func elu() -> MLXMimiStreamArray {
+        map { MLXNN.elu($0, alpha: 1.0) }
+    }
+}
+
+final class MLXMimiStreamingAdd {
+    var previousLeft = MLXMimiStreamArray()
+    var previousRight = MLXMimiStreamArray()
+
+    func resetState() {
+        previousLeft = MLXMimiStreamArray()
+        previousRight = MLXMimiStreamArray()
+    }
+
+    func step(_ left: MLXMimiStreamArray, _ right: MLXMimiStreamArray) -> MLXMimiStreamArray {
+        let left = previousLeft.cat2(left, axis: -1)
+        let right = previousRight.cat2(right, axis: -1)
+        let commonLength = min(left.dim(-1), right.dim(-1))
+        let (leftNow, leftLater) = left.split(lhsLength: commonLength, axis: -1)
+        let (rightNow, rightLater) = right.split(lhsLength: commonLength, axis: -1)
+        previousLeft = leftLater
+        previousRight = rightLater
+
+        switch (leftNow.asArray(), rightNow.asArray()) {
+        case let (.some(leftArray), .some(rightArray)):
+            return MLXMimiStreamArray(leftArray + rightArray)
+        case (.none, .none):
+            return MLXMimiStreamArray()
+        case (.some, .none), (.none, .some):
+            fatalError("Mimi streaming add reached mismatched non-empty operands")
+        }
     }
 }

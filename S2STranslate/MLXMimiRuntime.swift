@@ -98,9 +98,38 @@ public protocol MLXMimiRuntimeEngine: AnyObject {
 
 public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
     private let model: MLXMimiModel
+    private let inputBuilder: (MLXMimiPCMInput) throws -> MLXMimiStreamArray
+    private let encodeGraphStep: (MLXMimiStreamArray) throws -> MLXMimiStreamArray
+    private let tokenExtractor: (MLXMimiStreamArray) throws -> [MLXMimiEncodedFrame]
 
     public init(model: MLXMimiModel = MLXMimiModel()) {
         self.model = model
+        self.inputBuilder = { input in
+            MLXMimiStreamArray(MLXArray(input.samples)[.newAxis, .newAxis])
+        }
+        self.encodeGraphStep = { [model] stream in
+            var stream = model.encoder.step(stream)
+            stream = model.encoderTransformer.step(stream, cache: model.encoderTransformerCache)
+            stream = model.downsample.step(stream)
+            return model.quantizer.encode(stream)
+        }
+        self.tokenExtractor = { [model] stream in
+            try MLXMimiTokenFrameExtractor(
+                codebookCount: model.configuration.quantizerCodebookCount
+            ).frames(from: stream)
+        }
+    }
+
+    init(
+        model: MLXMimiModel = MLXMimiModel(),
+        inputBuilder: @escaping (MLXMimiPCMInput) throws -> MLXMimiStreamArray,
+        encodeGraphStep: @escaping (MLXMimiStreamArray) throws -> MLXMimiStreamArray,
+        tokenExtractor: @escaping (MLXMimiStreamArray) throws -> [MLXMimiEncodedFrame]
+    ) {
+        self.model = model
+        self.inputBuilder = inputBuilder
+        self.encodeGraphStep = encodeGraphStep
+        self.tokenExtractor = tokenExtractor
     }
 
     public func resetEncodeState() {
@@ -117,8 +146,53 @@ public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
     }
 
     public func encode(_ input: MLXMimiPCMInput) throws -> [MLXMimiEncodedFrame] {
-        _ = MLXMimiStreamArray(MLXArray(input.samples)[.newAxis, .newAxis])
-        return []
+        let stream = try inputBuilder(input)
+        let codes = try encodeGraphStep(stream)
+        return try tokenExtractor(codes)
+    }
+}
+
+struct MLXMimiTokenFrameExtractor {
+    var codebookCount: Int
+
+    func frames(from stream: MLXMimiStreamArray) throws -> [MLXMimiEncodedFrame] {
+        guard let array = stream.asArray() else { return [] }
+
+        let tokens = array.asArray(Int32.self).map(Int.init)
+        return try frames(flattenedTokens: tokens, shape: array.shape)
+    }
+
+    func frames(flattenedTokens: [Int], shape: [Int]) throws -> [MLXMimiEncodedFrame] {
+        guard shape.count == 3 else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi token output shape malformed: expected [batch, codebook, time], got \(shape)"
+            )
+        }
+        guard shape[0] == 1 else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi token output batch unsupported: expected 1, got \(shape[0])"
+            )
+        }
+        guard shape[1] == codebookCount else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi token output codebooks malformed: expected \(codebookCount), got \(shape[1])"
+            )
+        }
+
+        let frameCount = shape[2]
+        guard flattenedTokens.count == shape.reduce(1, *) else {
+            throw MimiRuntimeError.loadFailed(
+                "Mimi token output buffer malformed: expected \(shape.reduce(1, *)) tokens, got \(flattenedTokens.count)"
+            )
+        }
+        guard frameCount > 0 else { return [] }
+
+        return (0..<frameCount).map { frameIndex in
+            let tokens = (0..<codebookCount).map { codebookIndex in
+                flattenedTokens[codebookIndex * frameCount + frameIndex]
+            }
+            return MLXMimiEncodedFrame(tokens: tokens)
+        }
     }
 }
 
@@ -213,11 +287,19 @@ public final class MLXMimiRuntime: @unchecked Sendable {
     }
 }
 
-public struct MLXMimiRuntimeLoader: Sendable {
+public struct MLXMimiRuntimeLoader {
     private let configuration: MLXMimiRuntimeConfiguration
+    private let weightLoader: MLXMimiWeightLoader
+    private let graphParameterApplier: MLXMimiGraphParameterApplier
 
-    nonisolated public init(configuration: MLXMimiRuntimeConfiguration = .mimi202407) {
+    nonisolated public init(
+        configuration: MLXMimiRuntimeConfiguration = .mimi202407,
+        weightLoader: MLXMimiWeightLoader = MLXMimiWeightLoader(),
+        graphParameterApplier: MLXMimiGraphParameterApplier = MLXMimiGraphParameterApplier()
+    ) {
         self.configuration = configuration
+        self.weightLoader = weightLoader
+        self.graphParameterApplier = graphParameterApplier
     }
 
     public func load(from artifacts: PreparedModelArtifacts) throws -> MLXMimiRuntime {
@@ -229,9 +311,23 @@ public struct MLXMimiRuntimeLoader: Sendable {
             throw MimiRuntimeError.missingArtifactFile(artifact.fileName)
         }
 
+        let model = MLXMimiModel(
+            configuration: .mimi202407(codebookCount: configuration.codebookCount),
+            batchSize: 1
+        )
+        do {
+            let weights = try weightLoader.load(from: artifacts)
+            try graphParameterApplier.apply(weights, to: model)
+        } catch let error as MLXMimiWeightLoadError {
+            throw MimiRuntimeError.loadFailed(error.userVisibleMessage)
+        } catch {
+            throw MimiRuntimeError.loadFailed(String(describing: error))
+        }
+
         let runtime = MLXMimiRuntime(
             artifact: artifact,
-            configuration: configuration
+            configuration: configuration,
+            engine: MLXMimiDefaultRuntimeEngine(model: model)
         )
         try runtime.validateMetadata()
         return runtime

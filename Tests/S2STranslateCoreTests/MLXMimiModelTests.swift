@@ -1,3 +1,4 @@
+import MLX
 import Testing
 
 @testable import S2STranslateCore
@@ -41,6 +42,51 @@ struct MLXMimiModelTests {
         #expect(model.quantizer.bins == 2_048)
         #expect(model.quantizer.inputDimension == 512)
         #expect(model.quantizer.outputDimension == 512)
+    }
+
+    @Test("downsample keeps empty streaming input empty")
+    func downsampleKeepsEmptyStreamingInputEmpty() {
+        let downsample = MLXMimiConvDownsample1d(stride: 2, dimension: 512, causal: true)
+
+        let output = downsample.step(MLXMimiStreamArray())
+
+        #expect(output.isEmpty)
+        #expect(downsample.conv.leftPadApplied == false)
+    }
+
+    @Test("downsample buffers insufficient streaming input without placeholder output")
+    func downsampleBuffersInsufficientStreamingInputWithoutPlaceholderOutput() {
+        let downsample = MLXMimiConvDownsample1d(stride: 2, dimension: 1, causal: true)
+        let input = MLXMimiStreamArray(MLXArray([Float(0)]).reshaped([1, 1, 1]))
+
+        let output = downsample.step(input)
+
+        #expect(output.isEmpty)
+        #expect(downsample.conv.leftPadApplied)
+        #expect(downsample.conv.previousInput.shape == [1, 1, 3])
+    }
+
+    @Test("model reset clears encoder streaming state")
+    func modelResetClearsEncoderStreamingState() {
+        let model = MLXMimiModel()
+        model.downsample.conv.leftPadApplied = true
+
+        model.resetEncodeState()
+
+        #expect(model.downsample.conv.leftPadApplied == false)
+    }
+
+    @Test("Seanet encoder owns executable Moshi topology")
+    func seanetEncoderOwnsExecutableMoshiTopology() {
+        let encoder = MLXMimiSeanetEncoder(.v0_1())
+
+        #expect(encoder.initConv1d.weightShape == [64, 7, 1])
+        #expect(encoder.layers.count == 4)
+        #expect(encoder.layers[0].downsample.weightShape == [128, 8, 64])
+        #expect(encoder.layers[1].downsample.weightShape == [256, 10, 128])
+        #expect(encoder.layers[2].downsample.weightShape == [512, 12, 256])
+        #expect(encoder.layers[3].downsample.weightShape == [1_024, 16, 512])
+        #expect(encoder.finalConv1d.weightShape == [512, 3, 1_024])
     }
 
     @Test("deterministic Mimi encoder and decoder remain independent from MLX shell")

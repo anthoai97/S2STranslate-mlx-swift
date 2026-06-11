@@ -28,7 +28,7 @@ struct MLXMimiRuntimeTests {
             ]
         )
 
-        let runtime = try MLXMimiRuntimeLoader().load(from: artifacts)
+        let runtime = try makeShapeOnlyRuntimeLoader().load(from: artifacts)
 
         #expect(runtime.artifact.fileName == "mimi.safetensors")
         #expect(runtime.artifact.location == weightsURL.path)
@@ -93,6 +93,75 @@ struct MLXMimiRuntimeTests {
 
         #expect(engine.resetEncodeCount == 2)
         #expect(engine.resetDecodeCount == 2)
+    }
+
+    @Test("default runtime engine runs encode graph and preserves empty output")
+    func defaultRuntimeEngineRunsEncodeGraphAndPreservesEmptyOutput() throws {
+        var graphCallCount = 0
+        var extractionCallCount = 0
+        let engine = MLXMimiDefaultRuntimeEngine(
+            inputBuilder: { input in
+                #expect(input.pcmShape == [1, 1, 960])
+                return MLXMimiStreamArray()
+            },
+            encodeGraphStep: { stream in
+                graphCallCount += 1
+                #expect(stream.isEmpty)
+                return MLXMimiStreamArray()
+            },
+            tokenExtractor: { stream in
+                extractionCallCount += 1
+                #expect(stream.isEmpty)
+                return []
+            }
+        )
+
+        let frames = try engine.encode(
+            MLXMimiPCMInput(
+                samples: Array(repeating: 0, count: 960),
+                sampleRate: 24_000,
+                pcmShape: [1, 1, 960]
+            )
+        )
+
+        #expect(frames.isEmpty)
+        #expect(graphCallCount == 1)
+        #expect(extractionCallCount == 1)
+    }
+
+    @Test("token frame extractor preserves codebook count and frame order")
+    func tokenFrameExtractorPreservesCodebookCountAndFrameOrder() throws {
+        let extractor = MLXMimiTokenFrameExtractor(codebookCount: 3)
+
+        let frames = try extractor.frames(
+            flattenedTokens: [
+                10, 11,
+                20, 21,
+                30, 31,
+            ],
+            shape: [1, 3, 2]
+        )
+
+        #expect(frames == [
+            MLXMimiEncodedFrame(tokens: [10, 20, 30]),
+            MLXMimiEncodedFrame(tokens: [11, 21, 31]),
+        ])
+    }
+
+    @Test("token frame extractor reports malformed output shape")
+    func tokenFrameExtractorReportsMalformedOutputShape() throws {
+        let extractor = MLXMimiTokenFrameExtractor(codebookCount: 16)
+
+        #expect(
+            throws: MimiRuntimeError.loadFailed(
+                "Mimi token output codebooks malformed: expected 16, got 3"
+            )
+        ) {
+            _ = try extractor.frames(
+                flattenedTokens: [1, 2, 3],
+                shape: [1, 3, 1]
+            )
+        }
     }
 
     @Test("warmup builds zero PCM request and exercises engine")
@@ -177,6 +246,46 @@ struct MLXMimiRuntimeTests {
             try MLXMimiRuntimeLoader().load(from: artifacts)
         }
     }
+
+    @Test("runtime loader reports incompatible graph parameter shape")
+    func runtimeLoaderReportsIncompatibleGraphParameterShape() throws {
+        let artifacts = PreparedModelArtifacts(
+            manifest: ModelRuntimeManifest(
+                modelRepo: "repo",
+                revision: "rev",
+                requiredFiles: [
+                    ModelArtifactRequirement(role: "mimiWeights", fileName: "mimi.safetensors"),
+                ]
+            ),
+            files: [
+                try makePreparedMimiArtifact(),
+            ]
+        )
+        let key = "encoder_transformer.layers.0.self_attn.in_proj.weight"
+        let loader = MLXMimiRuntimeLoader(
+            weightLoader: MLXMimiWeightLoader(arrayReader: { _ in
+                [
+                    key: MLXMimiWeightTensor(shape: [1], array: nil),
+                ]
+            }),
+            graphParameterApplier: MLXMimiGraphParameterApplier(requiredKeys: [key])
+        )
+
+        #expect(
+            throws: MimiRuntimeError.loadFailed(
+                "Mimi weight shape incompatible for \(key): expected [1536, 512], got [1]"
+            )
+        ) {
+            try loader.load(from: artifacts)
+        }
+    }
+}
+
+private func makeShapeOnlyRuntimeLoader() -> MLXMimiRuntimeLoader {
+    MLXMimiRuntimeLoader(
+        weightLoader: MLXMimiWeightLoader(arrayReader: { _ in [:] }),
+        graphParameterApplier: MLXMimiGraphParameterApplier(requiredKeys: [])
+    )
 }
 
 private func makeRuntimeTemporaryDirectory() throws -> URL {

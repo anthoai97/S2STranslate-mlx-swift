@@ -75,6 +75,13 @@ public enum MLXMimiWeightKeyMapper {
         if key.hasSuffix(".linear2.weight") {
             key = key.replacingOccurrences(of: ".linear2.weight", with: ".gating.linear2.weight")
         }
+        while key.contains(".conv.conv.") {
+            key = key.replacingOccurrences(of: ".conv.conv.", with: ".conv.")
+        }
+        while key.contains(".convtr.convtr.") {
+            key = key.replacingOccurrences(of: ".convtr.convtr.", with: ".convtr.")
+        }
+        key = key.replacingOccurrences(of: "_transformer.transformer.", with: "_transformer.")
 
         for (layerIndex, decoderIndex) in [2, 5, 8, 11].enumerated() {
             key = key.replacingOccurrences(
