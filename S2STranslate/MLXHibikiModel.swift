@@ -1,5 +1,10 @@
 import MLX
 
+struct MLXHibikiMainStepOutput {
+    let transformerOutput: MLXArray
+    let textLogits: MLXArray
+}
+
 final class MLXHibikiEmbedding {
     let vocabSize: Int
     let dimensions: Int
@@ -107,6 +112,7 @@ final class MLXHibikiLanguageModel {
     let outNorm: MLXMimiTransformerNorm
     let textLinear: MLXMimiLinear
     let depformerSlices: [MLXHibikiDepformerSlice]
+    let mainTransformerCache: [MLXMimiKVCache]
 
     init(topology: MLXHibikiModelTopology) {
         self.topology = topology
@@ -140,5 +146,45 @@ final class MLXHibikiLanguageModel {
                 configuration: topology.depformerTransformer
             )
         }
+        self.mainTransformerCache = transformer.makeCache(batchSize: 1)
+    }
+
+    var textPaddingToken: Int {
+        topology.textInputVocabSize - 1
+    }
+
+    var audioPaddingToken: Int {
+        topology.audioVocabSize - 1
+    }
+
+    func mainStep(textToken: Int?, audioTokens: [Int]) throws -> MLXHibikiMainStepOutput {
+        guard audioTokens.count == audioEmbeddings.count else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "main step expected \(audioEmbeddings.count) audio tokens, got \(audioTokens.count)"
+            )
+        }
+
+        var x = textToken.map {
+            textEmbedding(MLXArray([Int32($0)]).reshaped([1, 1]))
+        }
+        for (token, embedding) in zip(audioTokens, audioEmbeddings) {
+            let tokenIDs = MLXArray([Int32(token)]).reshaped([1, 1])
+            let embedded = embedding(tokenIDs)
+            x = x.map { $0 + embedded } ?? embedded
+        }
+        guard let x else {
+            throw HibikiInferenceError.invalidArtifacts("main step missing text and audio tokens")
+        }
+
+        let transformerOutput = outNorm(transformer(x, cache: mainTransformerCache))
+        let textLogits = textLinear(transformerOutput[0..., -1, 0...])
+        return MLXHibikiMainStepOutput(
+            transformerOutput: transformerOutput,
+            textLogits: textLogits
+        )
+    }
+
+    func resetMainCache() {
+        MLXMimiProjectedTransformer.resetCache(mainTransformerCache)
     }
 }

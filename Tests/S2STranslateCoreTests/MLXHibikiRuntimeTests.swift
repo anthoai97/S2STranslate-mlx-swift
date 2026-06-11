@@ -145,6 +145,7 @@ struct MLXHibikiRuntimeTests {
         #expect(model.audioEmbeddings.count == 32)
         #expect(model.audioEmbeddings[0].weightShape == [2_049, 2_048])
         #expect(model.transformer.layers.count == 28)
+        #expect(model.mainTransformerCache.count == 28)
         #expect(model.transformer.layers[0].selfAttention.keyValueHeadCount == 8)
         #expect(model.transformer.layers[0].selfAttention.qkvProjection.weightShape == [4_096, 2_048])
         #expect(model.textLinear.weightShape == [48_000, 2_048])
@@ -157,6 +158,34 @@ struct MLXHibikiRuntimeTests {
         #expect(model.depformerSlices[0].norm.biasShape == [1_024])
         #expect(model.depformerSlices[0].transformer.layers.count == 6)
         #expect(model.depformerSlices[0].transformer.layers[0].selfAttention.qkvProjection.weightShape == [3_072, 1_024])
+    }
+
+    @Test("MLX Hibiki language model executes cached main step")
+    func mlxHibikiLanguageModelExecutesCachedMainStep() throws {
+        let model = MLXHibikiLanguageModel(topology: tinyHibikiTopology())
+
+        let first = try model.mainStep(textToken: model.textPaddingToken, audioTokens: [0, model.audioPaddingToken])
+        let second = try model.mainStep(textToken: 3, audioTokens: [1, 2])
+
+        #expect(first.transformerOutput.shape == [1, 1, 8])
+        #expect(first.textLogits.shape == [1, 16])
+        #expect(second.transformerOutput.shape == [1, 1, 8])
+        #expect(model.mainTransformerCache.allSatisfy { $0.offset == 2 })
+
+        model.resetMainCache()
+
+        #expect(model.mainTransformerCache.allSatisfy { $0.offset == 0 })
+    }
+
+    @Test("MLX Hibiki language model validates main step audio token count")
+    func mlxHibikiLanguageModelValidatesMainStepAudioTokenCount() throws {
+        let model = MLXHibikiLanguageModel(topology: tinyHibikiTopology())
+
+        #expect(
+            throws: HibikiInferenceError.invalidArtifacts("main step expected 2 audio tokens, got 1")
+        ) {
+            _ = try model.mainStep(textToken: 0, audioTokens: [0])
+        }
     }
 
     @Test("MLX Hibiki graph parameter applier matches q4 artifact target topology")
