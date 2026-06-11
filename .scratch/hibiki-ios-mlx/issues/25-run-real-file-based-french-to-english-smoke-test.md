@@ -1,6 +1,6 @@
 # Run Real File-Based French-to-English Smoke Test
 
-Status: in-progress
+Status: done
 
 ## Parent
 
@@ -14,12 +14,12 @@ This is the first end-to-end real translation smoke test.
 
 ## Acceptance criteria
 
-- [ ] The app can prepare real model artifacts and initialize real Mimi/Hibiki components.
-- [ ] A selected French file input streams through real Mimi encode, real Hibiki generation, real Mimi decode, and playback.
-- [ ] English text appears incrementally as it is produced.
-- [ ] English voice output is routed to playback or a clearly inspectable sink.
-- [ ] Metrics distinguish file decode, Mimi encode, Hibiki step/sampling, Mimi decode, and playback delivery.
-- [ ] Failure states from artifact download, model load, encode, inference, decode, and playback remain user-visible.
+- [x] The app can prepare real model artifacts and initialize real Mimi/Hibiki components.
+- [x] A selected French file input streams through real Mimi encode, real Hibiki generation, real Mimi decode, and playback.
+- [x] English text appears incrementally as it is produced.
+- [x] English voice output is routed to playback or a clearly inspectable sink.
+- [x] Metrics distinguish file decode, Mimi encode, Hibiki step/sampling, Mimi decode, and playback delivery.
+- [x] Failure states from artifact download, model load, encode, inference, decode, and playback remain user-visible.
 - [x] A manual smoke-test document records device/simulator expectations, first-run model cache cost, and known limitations.
 - [x] Automated tests exercise the orchestration path with fake real-component seams where full 3B inference is impractical.
 
@@ -29,11 +29,12 @@ This is the first end-to-end real translation smoke test.
 - This issue is not done if it only emits deterministic placeholder text or buffered silent audio.
 - Current checkpoints unblock playback with `AVAudioPlaybackSink`, add the real decode boundary for zero/one/many decoded chunks, wire the executable MLX Mimi decode graph, add the MLX Hibiki session/load boundary, add grouped-query/`rope_concat` transformer support plus Hibiki LM/Depformer topology parsing, graph-shell construction, q4 graph-parameter assignment, delayed runtime sequence state, main text sampling, sequential Depformer audio-token sampling, default SentencePiece tokenizer decoding from the prepared artifact, a real-file backend that constructs MLX Mimi encode/decode components after artifact preparation, the app demo path wired to that real-file backend with bounded tail-silence flushing, visible component failure statuses for Mimi runtime load failures, and the manual smoke checklist in `docs/real-file-french-english-smoke-test.md`.
 - Added an opt-in automated real-file smoke gate: `S2S_RUN_REAL_FILE_SMOKE_TESTS=1 swift test --filter RealFileFrenchEnglishSmoke`. It uses local `ref/hibiki-zero-mlx/weights` artifacts by default, runs `French Europarl short 1`, and asserts nonzero real file decode, Mimi encode, Hibiki text/audio generation, Mimi decode, and buffered playback counters.
-- Remaining blocker is proving the real full-artifact file smoke, including incrementally visible decoded English text and inspectable generated audio quality, before this can be marked done.
+- Full-artifact smoke passed locally with `S2S_RUN_REAL_FILE_SMOKE_TESTS=1 swift test --filter RealFileFrenchEnglishSmoke` on 2026-06-11. The run used local `ref/hibiki-zero-mlx/weights`, `French Europarl short 1`, real MLX Mimi encode/decode, real MLX Hibiki generation, and `BufferedPlaybackSink`; it completed in 42.794 seconds with nonzero file decode, Mimi encode, Hibiki text/audio generation, Mimi decode, and buffered playback counters.
 
 ## Blocked by
 
-- `.scratch/hibiki-ios-mlx/issues/12-implement-real-huggingface-artifact-download-cache.md`
-- `.scratch/hibiki-ios-mlx/issues/17-implement-mlx-mimi-streaming-encode.md`
-- `.scratch/hibiki-ios-mlx/issues/23-implement-hibiki-token-sampling-and-text-output.md`
-- `.scratch/hibiki-ios-mlx/issues/24-add-av-audio-playback-sink.md`
+- None.
+
+## Verification
+
+- `S2S_RUN_REAL_FILE_SMOKE_TESTS=1 swift test --filter RealFileFrenchEnglishSmoke` passes with 1 opt-in smoke test.

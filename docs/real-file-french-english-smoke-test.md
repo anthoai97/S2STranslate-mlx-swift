@@ -49,3 +49,7 @@ swift test --filter RealFileFrenchEnglishSmoke
 ```
 
 The test asserts real file decode, Mimi encode, Hibiki stepping/text, Mimi decode, and buffered playback counters are all nonzero.
+
+## Latest Verified Run
+
+- 2026-06-11: `S2S_RUN_REAL_FILE_SMOKE_TESTS=1 swift test --filter RealFileFrenchEnglishSmoke` passed in 42.794 seconds with local `ref/hibiki-zero-mlx/weights`, `French Europarl short 1`, real MLX Mimi encode/decode, real MLX Hibiki generation, and `BufferedPlaybackSink`.
