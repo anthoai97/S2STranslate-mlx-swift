@@ -40,6 +40,14 @@ _Avoid_: Translating, successful
 A component that emits timestamped PCM chunks into an Experiment Session. It may be fixture-backed, file-backed, or microphone-backed, but automated tests should prefer deterministic fixture or file sources.
 _Avoid_: Recorder, microphone session
 
+**File Audio Input Source**:
+An Audio Input Source that decodes a local or cached audio file into mono PCM Chunks at the pipeline sample rate. It is the preferred reproducible UI input before live microphone support.
+_Avoid_: Batch translation, uploaded file
+
+**Remote Audio Fixture**:
+A known sample audio file downloaded into the app cache before being decoded by a File Audio Input Source. The first fixtures are French-to-English examples from Kyutai's Hibiki-Zero sample Space.
+_Avoid_: Model artifact, bundled asset
+
 **PCM Chunk**:
 A bounded slice of normalized audio samples with a sample rate, frame index, and timestamp. It is the input boundary before Mimi encoding.
 _Avoid_: Audio token, waveform file

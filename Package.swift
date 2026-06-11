@@ -23,6 +23,7 @@ let package = Package(
             ],
             sources: [
                 "ExperimentSession.swift",
+                "FileAudioInput.swift",
                 "ModelArtifactPreparation.swift",
                 "ReferenceTrace.swift",
                 "StreamingHibikiInference.swift",

@@ -5,24 +5,34 @@
 //  Created by An Quach on 10/6/26.
 //
 
+import Combine
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var session = ExperimentSession(
-        backend: HibikiTranslationExperimentBackend(
-            artifactPreparer: ModelArtifactPreparer(
-                manifest: .hibikiQ4Default,
-                provider: DemoModelArtifactProvider()
-            ),
-            audioSource: FixtureAudioInputSource(),
-            mimiEncoder: DeterministicMimiStreamingEncoder(),
-            inferenceSession: DeterministicHibikiInferenceSession(),
-            mimiDecoder: DeterministicMimiStreamingDecoder(),
-            playbackSink: BufferedPlaybackSink()
-        )
-    )
+    @StateObject private var inputSelection: DemoAudioInputSelection
+    @StateObject private var session: ExperimentSession
     @State private var showSettings = false
     @State private var showPlaceholderObservations = false
+
+    init() {
+        let inputSelection = DemoAudioInputSelection(fixtures: FileAudioFixtureCatalog.frenchFixtures)
+        _inputSelection = StateObject(wrappedValue: inputSelection)
+        _session = StateObject(
+            wrappedValue: ExperimentSession(
+                backend: HibikiTranslationExperimentBackend(
+                    artifactPreparer: ModelArtifactPreparer(
+                        manifest: .hibikiQ4Default,
+                        provider: DemoModelArtifactProvider()
+                    ),
+                    audioSource: inputSelection.source,
+                    mimiEncoder: DeterministicMimiStreamingEncoder(),
+                    inferenceSession: DeterministicHibikiInferenceSession(),
+                    mimiDecoder: DeterministicMimiStreamingDecoder(),
+                    playbackSink: BufferedPlaybackSink()
+                )
+            )
+        )
+    }
 
     var body: some View {
         NavigationStack {
@@ -33,7 +43,10 @@ struct ContentView: View {
                 }
 
                 if session.observations.output.isEmpty {
-                    ExperimentInfoPanel(statusText: statusText)
+                    ExperimentInfoPanel(
+                        statusText: statusText,
+                        inputTitle: inputSelection.selectedFixture.title
+                    )
                         .transition(.opacity)
                 } else {
                     ExperimentOutputPanel(output: session.observations.output)
@@ -88,6 +101,14 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .popover(isPresented: $showSettings, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 16) {
+                        Picker("Input", selection: selectedFixtureBinding) {
+                            ForEach(inputSelection.fixtures) { fixture in
+                                Text(fixture.title).tag(fixture.id)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .disabled(session.state == .preparing || session.state == .running)
+
                         Toggle(isOn: $showPlaceholderObservations) {
                             Label("Session Observations", systemImage: "chart.bar")
                         }
@@ -107,6 +128,13 @@ struct ContentView: View {
             }
         }
         .padding(.vertical, 8)
+    }
+
+    private var selectedFixtureBinding: Binding<String> {
+        Binding(
+            get: { inputSelection.selectedFixtureID },
+            set: { inputSelection.selectFixture(id: $0) }
+        )
     }
 
     private func performPrimaryAction() {
@@ -185,8 +213,37 @@ struct ContentView: View {
     }
 }
 
+@MainActor
+private final class DemoAudioInputSelection: ObservableObject {
+    @Published private(set) var selectedFixtureID: String
+
+    let fixtures: [FileAudioFixture]
+    let source: ConfigurableAudioInputSource
+
+    init(fixtures: [FileAudioFixture]) {
+        let fallback = FileAudioFixtureCatalog.frenchShortForm[0]
+        let initialFixture = fixtures.first ?? fallback
+        self.fixtures = fixtures.isEmpty ? [fallback] : fixtures
+        self.selectedFixtureID = initialFixture.id
+        self.source = ConfigurableAudioInputSource(
+            source: RemoteAudioFileInputSource(fixture: initialFixture)
+        )
+    }
+
+    var selectedFixture: FileAudioFixture {
+        fixtures.first { $0.id == selectedFixtureID } ?? fixtures[0]
+    }
+
+    func selectFixture(id: String) {
+        guard let fixture = fixtures.first(where: { $0.id == id }) else { return }
+        selectedFixtureID = fixture.id
+        source.update(source: RemoteAudioFileInputSource(fixture: fixture))
+    }
+}
+
 private struct ExperimentInfoPanel: View {
     let statusText: String
+    let inputTitle: String
 
     var body: some View {
         VStack(spacing: 24) {
@@ -202,7 +259,11 @@ private struct ExperimentInfoPanel: View {
                 Text(statusText)
                     .font(.headline)
 
-                Text("Artifact preparation, fixture audio input, deterministic Hibiki inference, Mimi decode, and buffered playback demo.")
+                Text(inputTitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                Text("Artifact preparation, file audio input, deterministic Hibiki inference, Mimi decode, and buffered playback demo.")
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
