@@ -652,9 +652,16 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
                 .ready,
             ]
         } catch let error as MimiRuntimeError {
-            return [.failure(error.userVisibleMessage)]
+            return [
+                .mimiEncode(.streamFailed(error.userVisibleMessage)),
+                .mimiDecode(.streamFailed(error.userVisibleMessage)),
+                .failure(error.userVisibleMessage),
+            ]
         } catch let error as MimiEncodeError {
-            return [.failure(error.userVisibleMessage)]
+            return [
+                .mimiEncode(.streamFailed(error.userVisibleMessage)),
+                .failure(error.userVisibleMessage),
+            ]
         } catch let error as HibikiInferenceError {
             return [
                 .hibikiInference(.streamFailed(error.userVisibleMessage)),

@@ -19,16 +19,17 @@ struct ContentView: View {
         _inputSelection = StateObject(wrappedValue: inputSelection)
         _session = StateObject(
             wrappedValue: ExperimentSession(
-                backend: HibikiTranslationExperimentBackend(
+                backend: RealFileHibikiTranslationExperimentBackend(
                     artifactPreparer: ModelArtifactPreparer(
                         manifest: .hibikiQ4Default,
                         provider: HuggingFaceModelArtifactProvider()
                     ),
                     audioSource: inputSelection.source,
-                    mimiEncoder: DeterministicMimiStreamingEncoder(),
-                    inferenceSession: DeterministicHibikiInferenceSession(),
-                    mimiDecoder: DeterministicMimiStreamingDecoder(),
-                    playbackSink: AVAudioPlaybackSink()
+                    playbackSink: AVAudioPlaybackSink(),
+                    generationConfiguration: HibikiGenerationConfiguration(
+                        tailSilenceFrameCount: 8,
+                        postInputPaddingStopFrameCount: 3
+                    )
                 )
             )
         )
@@ -265,7 +266,7 @@ private struct ExperimentInfoPanel: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Text("Real artifact preparation, file audio input, deterministic Hibiki inference, Mimi decode, and device playback demo.")
+                Text("Real artifact preparation, file audio input, MLX Mimi encode/decode, MLX Hibiki inference, and device playback demo.")
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -574,7 +575,7 @@ private struct PlaceholderObservationsPanel: View {
                 .font(.system(.body, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text("Real artifact preparation, file PCM chunks, deterministic Hibiki text/audio tokens, decoded PCM chunks, and buffered playback delivery are measured. Real MLX runtime execution, audible playback, model latency, and translation quality are not measured yet.")
+                Text("Real artifact preparation, file PCM chunks, MLX Mimi encode/decode, Hibiki text/audio tokens, decoded PCM chunks, and playback delivery are measured. Audible output and translation quality still require a full smoke run.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

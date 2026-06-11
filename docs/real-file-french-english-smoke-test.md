@@ -12,12 +12,12 @@ Use this checklist for issue 25 device/simulator smoke runs. The target flow is:
 - Prefer `French Europarl short 1` for the first run.
 - Simulator runs may use the inspectable buffered sink when device audio is not available.
 - Device runs use `AVAudioPlaybackSink` and should route decoded PCM progressively through AVFoundation.
+- The app demo path now constructs real MLX Mimi encode/decode components and a real MLX Hibiki session after artifacts prepare. It also appends a bounded tail-silence flush so delayed file-output text/audio can drain after source input ends.
 
 ## Known Limitations
 
-- Real Mimi encode is available and covered by an opt-in local artifact fixture.
-- The public Mimi decode boundary now supports zero, one, or many decoded chunks per token frame, and the AV playback sink can schedule decoded chunks progressively.
-- Full real Mimi decode graph, real Hibiki model stepping, token sampling/text output, and bit-for-bit end-to-end translation are still separate blockers before issue 25 can be marked done.
+- Real Mimi encode/decode and real Hibiki stepping are wired into the file demo path, with automated seam coverage for orchestration and opt-in artifact coverage for the local Mimi codec fixture.
+- Full 3B q4 French-to-English translation quality and audible generated voice remain unverified until a device/simulator smoke run records real output.
 - If real decode emits no chunks, playback must stay silent; do not inject placeholder silence.
 
 ## Smoke Checklist

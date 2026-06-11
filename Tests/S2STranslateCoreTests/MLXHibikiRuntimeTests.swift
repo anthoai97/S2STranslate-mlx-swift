@@ -475,6 +475,32 @@ struct MLXHibikiRuntimeTests {
         #expect(session.observations.playbackChunkCount == 2)
         #expect(session.observations.output == " mlx mlx")
     }
+
+    @Test("real file backend reports Mimi runtime load failures in component observations")
+    @MainActor
+    func realFileBackendReportsMimiRuntimeLoadFailuresInComponentObservations() async throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let session = ExperimentSession(
+            backend: RealFileHibikiTranslationExperimentBackend(
+                artifactPreparer: ModelArtifactPreparer(
+                    manifest: .hibikiQ4Default,
+                    provider: PreparedArtifactProvider(artifacts: artifacts)
+                ),
+                audioSource: FixtureAudioInputSource(sampleRate: 24_000, chunkSampleCount: 1_920, chunkCount: 1),
+                inferenceSession: MLXHibikiInferenceSession(engine: RecordingHibikiRuntimeEngine()),
+                playbackSink: BufferedPlaybackSink(),
+                mimiRuntimeLoader: { _ in
+                    throw MimiRuntimeError.loadFailed("mimi graph unavailable")
+                }
+            )
+        )
+
+        await session.prepare()
+
+        #expect(session.state == .failed("Mimi runtime load failed: mimi graph unavailable"))
+        #expect(session.observations.mimiEncodeStatus == "failed: Mimi runtime load failed: mimi graph unavailable")
+        #expect(session.observations.mimiDecodeStatus == "failed: Mimi runtime load failed: mimi graph unavailable")
+    }
 }
 
 private final class RecordingHibikiRuntimeEngine: MLXHibikiRuntimeEngine {
