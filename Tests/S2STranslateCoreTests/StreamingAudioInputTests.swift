@@ -50,6 +50,29 @@ struct StreamingAudioInputTests {
         #expect(session.observations.lastEventName == "audioInput:streamStopped")
     }
 
+    @Test("source playback backend plays decoded input samples directly")
+    @MainActor
+    func sourcePlaybackBackendPlaysInputSamplesDirectly() async {
+        let session = ExperimentSession(
+            backend: SourceAudioPlaybackExperimentBackend(
+                source: FixtureAudioInputSource(sampleRate: 24_000, chunkSampleCount: 1_920, chunkCount: 2),
+                playbackSink: BufferedPlaybackSink()
+            )
+        )
+
+        await session.prepare()
+        await session.start()
+
+        #expect(session.state == .running)
+        #expect(session.observations.audioInputStatus == "stopped")
+        #expect(session.observations.audioChunkCount == 2)
+        #expect(session.observations.playbackStatus == "stopped")
+        #expect(session.observations.playbackChunkCount == 2)
+        #expect(session.observations.mimiEncodedFrameCount == 0)
+        #expect(session.observations.hibikiStepCount == 0)
+        #expect(session.observations.decodedAudioChunkCount == 0)
+    }
+
     @Test("audio backend propagates input failures to Experiment Session")
     @MainActor
     func audioBackendPropagatesInputFailure() async {

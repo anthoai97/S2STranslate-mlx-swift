@@ -30,10 +30,12 @@ struct AVAudioPlaybackSinkTests {
                 sourceTokenFrameIndex: 1
             )
         )
+        try await sink.finish()
         sink.stop()
 
         #expect(engine.startedSampleRates == [24_000])
         #expect(engine.scheduledSampleCounts == [3, 2])
+        #expect(engine.finishCount == 1)
         #expect(engine.stopCount == 1)
         await #expect(throws: PlaybackSinkError.stopped) {
             try await sink.receive(
@@ -74,6 +76,41 @@ struct AVAudioPlaybackSinkTests {
             )
         }
     }
+
+    @Test("deferred playback sink starts wrapped audio only on finish")
+    func deferredPlaybackSinkStartsWrappedAudioOnlyOnFinish() async throws {
+        let engine = RecordingAudioPlaybackEngine()
+        let sink = DeferredAudioPlaybackSink(wrapped: AVAudioPlaybackSink(engine: engine))
+
+        try await sink.start(sampleRate: 24_000)
+        try await sink.receive(
+            DecodedAudioChunk(
+                frameIndex: 0,
+                timestampMilliseconds: 0,
+                sampleRate: 24_000,
+                samples: [0.1, 0.2, 0.3],
+                sourceTokenFrameIndex: 0
+            )
+        )
+        try await sink.receive(
+            DecodedAudioChunk(
+                frameIndex: 1,
+                timestampMilliseconds: 80,
+                sampleRate: 24_000,
+                samples: [0.4, 0.5],
+                sourceTokenFrameIndex: 1
+            )
+        )
+
+        #expect(engine.startedSampleRates.isEmpty)
+        #expect(engine.scheduledSampleCounts.isEmpty)
+
+        try await sink.finish()
+
+        #expect(engine.startedSampleRates == [24_000])
+        #expect(engine.scheduledSampleCounts == [3, 2])
+        #expect(engine.finishCount == 1)
+    }
 }
 
 private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecked Sendable {
@@ -89,6 +126,10 @@ private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecke
 
     var stopCount: Int {
         state.withLock { $0.stopCount }
+    }
+
+    var finishCount: Int {
+        state.withLock { $0.finishCount }
     }
 
     var startError: ExamplePlaybackEngineError? {
@@ -119,6 +160,10 @@ private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecke
         }
     }
 
+    func finish() async throws {
+        state.withLock { $0.finishCount += 1 }
+    }
+
     func stop() {
         state.withLock { $0.stopCount += 1 }
     }
@@ -131,6 +176,7 @@ private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecke
 private struct RecordingAudioPlaybackEngineState {
     var startedSampleRates: [Int] = []
     var scheduledSampleCounts: [Int] = []
+    var finishCount = 0
     var stopCount = 0
     var resetCount = 0
     var startError: ExamplePlaybackEngineError?

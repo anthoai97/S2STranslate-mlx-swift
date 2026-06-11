@@ -549,6 +549,7 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
             events.append(.mimiEncode(.streamStopped))
             events.append(.hibikiInference(.streamStopped))
             events.append(.mimiDecode(.streamStopped))
+            try await playbackSink.finish()
             events.append(.playback(.streamStopped))
             hibikiBackendLogger.info("deterministic run end events=\(events.count, privacy: .public)")
         } catch let error as AudioInputError {
@@ -743,7 +744,8 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
             events.append(.playback(.streamStarted(sampleRate: decoderDescription.sampleRate)))
 
             var nextAudioFrameIndex = 0
-            for chunk in try await source.chunks() {
+            let chunks = try await source.chunks()
+            for chunk in chunks {
                 events.append(.audioInput(.chunk(chunk)))
                 nextAudioFrameIndex = max(nextAudioFrameIndex, chunk.frameIndex + 1)
                 for sourceTokens in try await encoder.encode(chunk) {
@@ -771,6 +773,7 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
             events.append(.mimiEncode(.streamStopped))
             events.append(.hibikiInference(.streamStopped))
             events.append(.mimiDecode(.streamStopped))
+            try await playbackSink.finish()
             events.append(.playback(.streamStopped))
             hibikiBackendLogger.info("real-file run end events=\(events.count, privacy: .public)")
         } catch let error as AudioInputError {

@@ -161,8 +161,13 @@ public protocol MimiStreamingDecoder: Sendable {
 public protocol PlaybackSink: Sendable {
     func start(sampleRate: Int) async throws
     func receive(_ chunk: DecodedAudioChunk) async throws
+    func finish() async throws
     func stop()
     func reset()
+}
+
+public extension PlaybackSink {
+    func finish() async throws {}
 }
 
 public final class DeterministicMimiStreamingDecoder: MimiStreamingDecoder, @unchecked Sendable {
@@ -443,6 +448,7 @@ public struct MimiCodecPlaybackExperimentBackend: ExperimentBackend, Sendable {
             events.append(.audioInput(.streamStopped))
             events.append(.mimiEncode(.streamStopped))
             events.append(.mimiDecode(.streamStopped))
+            try await playbackSink.finish()
             events.append(.playback(.streamStopped))
         } catch let error as AudioInputError {
             events.append(.audioInput(.streamFailed(error.userVisibleMessage)))

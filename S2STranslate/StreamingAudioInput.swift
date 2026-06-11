@@ -210,6 +210,71 @@ public struct AudioInputExperimentBackend: ExperimentBackend, Sendable {
     }
 }
 
+public struct SourceAudioPlaybackExperimentBackend: ExperimentBackend, Sendable {
+    private let source: any AudioInputSource
+    private let playbackSink: any PlaybackSink
+
+    public init(
+        source: any AudioInputSource,
+        playbackSink: any PlaybackSink
+    ) {
+        self.source = source
+        self.playbackSink = playbackSink
+    }
+
+    public func prepareEvents() async -> [ExperimentEvent] {
+        [.ready]
+    }
+
+    public func runEvents() async -> [ExperimentEvent] {
+        playbackSink.reset()
+
+        let description = await source.description()
+        var events: [ExperimentEvent] = [
+            .audioInput(.streamStarted(sampleRate: description.sampleRate)),
+        ]
+
+        do {
+            try await playbackSink.start(sampleRate: description.sampleRate)
+            events.append(.playback(.streamStarted(sampleRate: description.sampleRate)))
+
+            for chunk in try await source.chunks() {
+                events.append(.audioInput(.chunk(chunk)))
+                let decoded = DecodedAudioChunk(
+                    frameIndex: chunk.frameIndex,
+                    timestampMilliseconds: chunk.timestampMilliseconds,
+                    sampleRate: chunk.sampleRate,
+                    samples: chunk.samples,
+                    sourceTokenFrameIndex: chunk.frameIndex
+                )
+                try await playbackSink.receive(decoded)
+                events.append(.playback(.chunk(decoded)))
+            }
+
+            events.append(.audioInput(.streamStopped))
+            try await playbackSink.finish()
+            events.append(.playback(.streamStopped))
+        } catch let error as AudioInputError {
+            events.append(.audioInput(.streamFailed(error.userVisibleMessage)))
+            events.append(.failure(error.userVisibleMessage))
+        } catch let error as PlaybackSinkError {
+            events.append(.playback(.streamFailed(error.userVisibleMessage)))
+            events.append(.failure(error.userVisibleMessage))
+        } catch {
+            let message = PlaybackSinkError.unavailable(String(describing: error)).userVisibleMessage
+            events.append(.playback(.streamFailed(message)))
+            events.append(.failure(message))
+        }
+
+        return events
+    }
+
+    public func stop() {
+        source.stop()
+        playbackSink.stop()
+    }
+}
+
 public struct ArtifactAndAudioExperimentBackend: ExperimentBackend, Sendable {
     private let artifactBackend: ModelArtifactExperimentBackend
     private let audioBackend: AudioInputExperimentBackend

@@ -10,24 +10,30 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var inputSelection: DemoAudioInputSelection
+    @StateObject private var runMode: DemoRunModeSelection
     @StateObject private var session: ExperimentSession
     @State private var showSettings = false
     @State private var showPlaceholderObservations = false
 
     init() {
         let inputSelection = DemoAudioInputSelection(fixtures: FileAudioFixtureCatalog.frenchFixtures)
+        let runMode = DemoRunModeSelection()
         let artifactPreparer = ModelArtifactPreparer(
             manifest: .hibikiQ4Default,
             provider: HuggingFaceModelArtifactProvider()
         )
         let generationConfiguration = HibikiGenerationConfiguration(
-            tailSilenceFrameCount: 8,
-            postInputPaddingStopFrameCount: 3
+            textTemperature: 0.4,
+            textTopK: 25,
+            tailSilenceFrameCount: 100,
+            postInputPaddingStopFrameCount: 12
         )
         _inputSelection = StateObject(wrappedValue: inputSelection)
+        _runMode = StateObject(wrappedValue: runMode)
         _session = StateObject(
             wrappedValue: ExperimentSession(
                 backend: Self.defaultBackend(
+                    runMode: runMode,
                     artifactPreparer: artifactPreparer,
                     audioSource: inputSelection.source,
                     generationConfiguration: generationConfiguration
@@ -39,6 +45,8 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
+                runConfigurationControls
+
                 if showPlaceholderObservations && hasActivity {
                     PlaceholderObservationsPanel(observations: session.observations)
                         .transition(.push(from: .top))
@@ -46,6 +54,7 @@ struct ContentView: View {
 
                 if session.observations.output.isEmpty {
                     ExperimentInfoPanel(
+                        mode: runMode.selectedMode,
                         statusText: statusText,
                         inputTitle: inputSelection.selectedFixture.title
                     )
@@ -83,25 +92,43 @@ struct ContentView: View {
     }
 
     private static func defaultBackend(
+        runMode: DemoRunModeSelection,
+        artifactPreparer: ModelArtifactPreparer,
+        audioSource: any AudioInputSource,
+        generationConfiguration: HibikiGenerationConfiguration
+    ) -> any ExperimentBackend {
+        DemoModeExperimentBackend(
+            runMode: runMode,
+            sourcePlaybackBackend: SourceAudioPlaybackExperimentBackend(
+                source: audioSource,
+                playbackSink: AVAudioPlaybackSink()
+            ),
+            translateBackend: defaultTranslateBackend(
+                artifactPreparer: artifactPreparer,
+                audioSource: audioSource,
+                generationConfiguration: generationConfiguration
+            )
+        )
+    }
+
+    private static func defaultTranslateBackend(
         artifactPreparer: ModelArtifactPreparer,
         audioSource: any AudioInputSource,
         generationConfiguration: HibikiGenerationConfiguration
     ) -> any ExperimentBackend {
         #if targetEnvironment(simulator)
-        HibikiTranslationExperimentBackend(
-            artifactPreparer: artifactPreparer,
-            audioSource: audioSource,
-            mimiEncoder: DeterministicMimiStreamingEncoder(),
-            inferenceSession: DeterministicHibikiInferenceSession(),
-            mimiDecoder: DeterministicMimiStreamingDecoder(),
-            playbackSink: AVAudioPlaybackSink(),
-            generationConfiguration: generationConfiguration
-        )
+        let message = "Real MLX translation is unavailable in iOS Simulator because MLX Metal aborts during GPU initialization; run on device or use the macOS smoke test."
+        return ScriptedExperimentBackend(prepareEvents: [
+            .mimiEncode(.streamFailed(message)),
+            .mimiDecode(.streamFailed(message)),
+            .hibikiInference(.streamFailed(message)),
+            .failure(message),
+        ], runEvents: [])
         #else
         RealFileHibikiTranslationExperimentBackend(
             artifactPreparer: artifactPreparer,
             audioSource: audioSource,
-            playbackSink: AVAudioPlaybackSink(),
+            playbackSink: DeferredAudioPlaybackSink(),
             generationConfiguration: generationConfiguration
         )
         #endif
@@ -130,14 +157,6 @@ struct ContentView: View {
                 .buttonStyle(.borderless)
                 .popover(isPresented: $showSettings, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 16) {
-                        Picker("Input", selection: selectedFixtureBinding) {
-                            ForEach(inputSelection.fixtures) { fixture in
-                                Text(fixture.title).tag(fixture.id)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .disabled(session.state == .preparing || session.state == .running)
-
                         Toggle(isOn: $showPlaceholderObservations) {
                             Label("Session Observations", systemImage: "chart.bar")
                         }
@@ -159,19 +178,52 @@ struct ContentView: View {
         .padding(.vertical, 8)
     }
 
+    private var runConfigurationControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Picker("Mode", selection: runModeBinding) {
+                ForEach(DemoRunMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(!canChangeConfiguration)
+
+            Picker("Sample", selection: selectedFixtureBinding) {
+                ForEach(inputSelection.fixtures) { fixture in
+                    Text(fixture.title).tag(fixture.id)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(!canChangeConfiguration)
+        }
+    }
+
+    private var runModeBinding: Binding<DemoRunMode> {
+        Binding(
+            get: { runMode.selectedMode },
+            set: { mode in
+                resetTerminalSessionIfNeeded()
+                runMode.select(mode: mode)
+            }
+        )
+    }
+
     private var selectedFixtureBinding: Binding<String> {
         Binding(
             get: { inputSelection.selectedFixtureID },
-            set: { inputSelection.selectFixture(id: $0) }
+            set: { id in
+                resetTerminalSessionIfNeeded()
+                inputSelection.selectFixture(id: id)
+            }
         )
     }
 
     private func performPrimaryAction() {
         switch session.state {
         case .unloaded:
-            Task { await session.prepare() }
+            Task { await prepareAndStart() }
         case .ready:
-            Task { await session.start() }
+            Task { await startAndStopWhenFinished() }
         case .running:
             session.stop()
         case .stopped, .failed:
@@ -181,25 +233,44 @@ struct ContentView: View {
         }
     }
 
+    private func prepareAndStart() async {
+        await session.prepare()
+        if session.state == .ready {
+            await startAndStopWhenFinished()
+        }
+    }
+
+    private func startAndStopWhenFinished() async {
+        await session.start()
+        if session.state == .running {
+            session.stop()
+        }
+    }
+
+    private func resetTerminalSessionIfNeeded() {
+        guard isTerminal else { return }
+        session.newSession()
+    }
+
     private var primaryActionTitle: String {
         switch session.state {
         case .unloaded:
-            "Prepare"
+            runMode.selectedMode.primaryActionTitle
         case .preparing:
             "Preparing"
         case .ready:
-            "Start"
+            runMode.selectedMode.readyActionTitle
         case .running:
             "Stop"
         case .stopped, .failed:
-            "New Session"
+            "Reset"
         }
     }
 
     private var primaryActionIcon: String {
         switch session.state {
         case .unloaded:
-            "arrow.clockwise"
+            runMode.selectedMode.primaryActionIcon
         case .preparing:
             "hourglass"
         case .ready:
@@ -230,6 +301,15 @@ struct ContentView: View {
 
     private var hasActivity: Bool {
         session.state != .unloaded || session.observations.eventCount > 0
+    }
+
+    private var canChangeConfiguration: Bool {
+        switch session.state {
+        case .unloaded, .stopped, .failed:
+            true
+        case .preparing, .ready, .running:
+            false
+        }
     }
 
     private var isTerminal: Bool {
@@ -270,7 +350,135 @@ private final class DemoAudioInputSelection: ObservableObject {
     }
 }
 
+private enum DemoRunMode: String, CaseIterable, Identifiable, Sendable {
+    case source
+    case translate
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .source:
+            "Sample"
+        case .translate:
+            "Translate"
+        }
+    }
+
+    var panelTitle: String {
+        switch self {
+        case .source:
+            "Sample Playback"
+        case .translate:
+            "Translation"
+        }
+    }
+
+    var panelDescription: String {
+        switch self {
+        case .source:
+            "Plays the selected source audio file."
+        case .translate:
+            "Streams the selected file through Mimi, Hibiki, Mimi decode, and playback."
+        }
+    }
+
+    var primaryActionTitle: String {
+        switch self {
+        case .source:
+            "Play Sample"
+        case .translate:
+            "Translate"
+        }
+    }
+
+    var primaryActionIcon: String {
+        switch self {
+        case .source:
+            "speaker.wave.2.fill"
+        case .translate:
+            "waveform.and.mic"
+        }
+    }
+
+    var readyActionTitle: String {
+        switch self {
+        case .source:
+            "Play"
+        case .translate:
+            "Start Translation"
+        }
+    }
+}
+
+private final class DemoRunModeSelection: ObservableObject, @unchecked Sendable {
+    @Published private(set) var selectedMode: DemoRunMode
+    private let lock = NSLock()
+    private var storedMode: DemoRunMode
+
+    init(initialMode: DemoRunMode = .source) {
+        self.selectedMode = initialMode
+        self.storedMode = initialMode
+    }
+
+    func select(mode: DemoRunMode) {
+        lock.lock()
+        storedMode = mode
+        lock.unlock()
+        selectedMode = mode
+    }
+
+    func currentMode() -> DemoRunMode {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedMode
+    }
+}
+
+private struct DemoModeExperimentBackend: ExperimentBackend, Sendable {
+    private let runMode: DemoRunModeSelection
+    private let sourcePlaybackBackend: any ExperimentBackend
+    private let translateBackend: any ExperimentBackend
+
+    init(
+        runMode: DemoRunModeSelection,
+        sourcePlaybackBackend: any ExperimentBackend,
+        translateBackend: any ExperimentBackend
+    ) {
+        self.runMode = runMode
+        self.sourcePlaybackBackend = sourcePlaybackBackend
+        self.translateBackend = translateBackend
+    }
+
+    func prepareEvents() async -> [ExperimentEvent] {
+        await selectedBackend.prepareEvents()
+    }
+
+    func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+        await selectedBackend.prepareEvents(send: send)
+    }
+
+    func runEvents() async -> [ExperimentEvent] {
+        await selectedBackend.runEvents()
+    }
+
+    func stop() {
+        sourcePlaybackBackend.stop()
+        translateBackend.stop()
+    }
+
+    private var selectedBackend: any ExperimentBackend {
+        switch runMode.currentMode() {
+        case .source:
+            sourcePlaybackBackend
+        case .translate:
+            translateBackend
+        }
+    }
+}
+
 private struct ExperimentInfoPanel: View {
+    let mode: DemoRunMode
     let statusText: String
     let inputTitle: String
 
@@ -281,7 +489,7 @@ private struct ExperimentInfoPanel: View {
                 .foregroundStyle(.blue)
 
             VStack(spacing: 12) {
-                Text("Experiment Session")
+                Text(mode.panelTitle)
                     .font(.title)
                     .bold()
 
@@ -292,7 +500,7 @@ private struct ExperimentInfoPanel: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Text("Real artifact preparation, file audio input, MLX Mimi encode/decode, MLX Hibiki inference, and playback delivery demo.")
+                Text(mode.panelDescription)
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
