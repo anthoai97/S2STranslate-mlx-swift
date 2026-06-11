@@ -43,11 +43,18 @@ public struct HibikiTextOutput: Equatable, Sendable {
     public var frameIndex: Int
     public var token: Int
     public var piece: String?
+    public var candidateTokens: [Int]
 
-    nonisolated public init(frameIndex: Int, token: Int, piece: String? = nil) {
+    nonisolated public init(
+        frameIndex: Int,
+        token: Int,
+        piece: String? = nil,
+        candidateTokens: [Int] = []
+    ) {
         self.frameIndex = frameIndex
         self.token = token
         self.piece = piece
+        self.candidateTokens = candidateTokens
     }
 
     public var isVisible: Bool {

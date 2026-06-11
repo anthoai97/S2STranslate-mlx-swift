@@ -21,14 +21,14 @@ This is the first end-to-end real translation smoke test.
 - [ ] Metrics distinguish file decode, Mimi encode, Hibiki step/sampling, Mimi decode, and playback delivery.
 - [ ] Failure states from artifact download, model load, encode, inference, decode, and playback remain user-visible.
 - [x] A manual smoke-test document records device/simulator expectations, first-run model cache cost, and known limitations.
-- [ ] Automated tests exercise the orchestration path with fake real-component seams where full 3B inference is impractical.
+- [x] Automated tests exercise the orchestration path with fake real-component seams where full 3B inference is impractical.
 
 ## Notes
 
 - Prefer `French Europarl short 1` as the first smoke input.
 - This issue is not done if it only emits deterministic placeholder text or buffered silent audio.
-- Current checkpoints unblock playback with `AVAudioPlaybackSink`, add the real decode boundary for zero/one/many decoded chunks, wire the executable MLX Mimi decode graph, and record the manual smoke checklist in `docs/real-file-french-english-smoke-test.md`.
-- Remaining blockers are real Hibiki model load/step/token sampling and app wiring to choose the real components for a French file smoke run before this can be marked done.
+- Current checkpoints unblock playback with `AVAudioPlaybackSink`, add the real decode boundary for zero/one/many decoded chunks, wire the executable MLX Mimi decode graph, add the MLX Hibiki session/load boundary with a fake model-step seam, and record the manual smoke checklist in `docs/real-file-french-english-smoke-test.md`.
+- Remaining blockers are the real Hibiki model step/token sampling graph and app wiring to choose the real components for a French file smoke run before this can be marked done.
 
 ## Blocked by
 
