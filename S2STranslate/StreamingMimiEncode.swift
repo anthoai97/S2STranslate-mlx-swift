@@ -159,6 +159,84 @@ public final class DeterministicMimiStreamingEncoder: MimiStreamingEncoder, @unc
     }
 }
 
+public final class MLXMimiStreamingEncoder: MimiStreamingEncoder, @unchecked Sendable {
+    private let runtime: MLXMimiRuntime
+    private let encoderDescription: MimiEncoderDescription
+    private let state = Mutex(MLXMimiStreamingEncoderState())
+
+    public init(runtime: MLXMimiRuntime) {
+        self.runtime = runtime
+        self.encoderDescription = MimiEncoderDescription(
+            sampleRate: runtime.configuration.sampleRate,
+            samplesPerFrame: runtime.configuration.samplesPerFrame,
+            codebookCount: runtime.configuration.codebookCount,
+            frameRate: runtime.configuration.frameRate
+        )
+    }
+
+    public func description() async -> MimiEncoderDescription {
+        encoderDescription
+    }
+
+    public func encode(_ chunk: PCMChunk) async throws -> [MimiTokenFrame] {
+        guard chunk.sampleRate == encoderDescription.sampleRate else {
+            throw MimiEncodeError.unsupportedSampleRate(chunk.sampleRate)
+        }
+
+        guard !chunk.samples.isEmpty else {
+            throw MimiEncodeError.malformedChunk("empty chunk at audio frame \(chunk.frameIndex)")
+        }
+
+        let encodedFrames: [MLXMimiEncodedFrame]
+        do {
+            encodedFrames = try runtime.encode(
+                MLXMimiPCMInput(
+                    samples: chunk.samples,
+                    sampleRate: chunk.sampleRate,
+                    pcmShape: [1, 1, chunk.samples.count]
+                )
+            )
+        } catch let error as MimiRuntimeError {
+            throw MimiEncodeError.unavailable(error.userVisibleMessage)
+        } catch {
+            throw MimiEncodeError.unavailable(String(describing: error))
+        }
+
+        guard !encodedFrames.isEmpty else { return [] }
+
+        return try state.withLock { state in
+            try encodedFrames.map { encodedFrame in
+                guard encodedFrame.tokens.count == encoderDescription.codebookCount else {
+                    throw MimiEncodeError.malformedChunk(
+                        "encoded frame has \(encodedFrame.tokens.count) tokens, expected \(encoderDescription.codebookCount)"
+                    )
+                }
+
+                let frameIndex = state.nextFrameIndex
+                state.nextFrameIndex += 1
+                return MimiTokenFrame(
+                    frameIndex: frameIndex,
+                    timestampMilliseconds: Double(frameIndex) * encoderDescription.frameDurationMilliseconds,
+                    codebookCount: encoderDescription.codebookCount,
+                    tokens: encodedFrame.tokens,
+                    sourceAudioFrameIndex: chunk.frameIndex
+                )
+            }
+        }
+    }
+
+    public func reset() {
+        runtime.resetEncodeState()
+        state.withLock { state in
+            state.nextFrameIndex = 0
+        }
+    }
+}
+
+private struct MLXMimiStreamingEncoderState: Sendable {
+    var nextFrameIndex = 0
+}
+
 private struct DeterministicMimiStreamingEncoderState: Sendable {
     var bufferedSampleCount = 0
     var nextFrameIndex = 0

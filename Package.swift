@@ -38,6 +38,8 @@ let package = Package(
                 "FileAudioInput.swift",
                 "MLXMimiModel.swift",
                 "MLXMimiRuntime.swift",
+                "MLXMimiStreamArray.swift",
+                "MLXMimiWeightLoading.swift",
                 "ModelArtifactPreparation.swift",
                 "ReferenceTrace.swift",
                 "StreamingHibikiInference.swift",

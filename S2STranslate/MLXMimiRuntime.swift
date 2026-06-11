@@ -8,17 +8,20 @@ public struct MLXMimiRuntimeConfiguration: Equatable, Sendable {
     public var sampleRate: Int
     public var frameRate: Double
     public var codebookCount: Int
+    public var quantizerBins: Int
     public var samplesPerFrame: Int
 
     nonisolated public init(
         sampleRate: Int,
         frameRate: Double,
         codebookCount: Int,
-        samplesPerFrame: Int
+        samplesPerFrame: Int,
+        quantizerBins: Int = 2_048
     ) {
         self.sampleRate = sampleRate
         self.frameRate = frameRate
         self.codebookCount = codebookCount
+        self.quantizerBins = quantizerBins
         self.samplesPerFrame = samplesPerFrame
     }
 
@@ -26,7 +29,8 @@ public struct MLXMimiRuntimeConfiguration: Equatable, Sendable {
         sampleRate: 24_000,
         frameRate: 12.5,
         codebookCount: 16,
-        samplesPerFrame: 1_920
+        samplesPerFrame: 1_920,
+        quantizerBins: 2_048
     )
 }
 
@@ -35,6 +39,7 @@ public enum MimiRuntimeError: Error, Equatable, Sendable {
     case missingArtifactFile(String)
     case incompatibleConfiguration(String)
     case loadFailed(String)
+    case warmupFailed(String)
 
     public var userVisibleMessage: String {
         switch self {
@@ -46,25 +51,161 @@ public enum MimiRuntimeError: Error, Equatable, Sendable {
             "Mimi runtime configuration incompatible: \(message)"
         case let .loadFailed(message):
             "Mimi runtime load failed: \(message)"
+        case let .warmupFailed(message):
+            "Mimi runtime warmup failed: \(message)"
         }
+    }
+}
+
+public struct MLXMimiWarmupRequest: Equatable, Sendable {
+    public var pcmShape: [Int]
+    public var sampleCount: Int
+    public var frameCount: Int
+
+    nonisolated public init(pcmShape: [Int], sampleCount: Int, frameCount: Int) {
+        self.pcmShape = pcmShape
+        self.sampleCount = sampleCount
+        self.frameCount = frameCount
+    }
+}
+
+public struct MLXMimiPCMInput: Equatable, Sendable {
+    public var samples: [Float]
+    public var sampleRate: Int
+    public var pcmShape: [Int]
+
+    nonisolated public init(samples: [Float], sampleRate: Int, pcmShape: [Int]) {
+        self.samples = samples
+        self.sampleRate = sampleRate
+        self.pcmShape = pcmShape
+    }
+}
+
+public struct MLXMimiEncodedFrame: Equatable, Sendable {
+    public var tokens: [Int]
+
+    nonisolated public init(tokens: [Int]) {
+        self.tokens = tokens
+    }
+}
+
+public protocol MLXMimiRuntimeEngine: AnyObject {
+    func resetEncodeState()
+    func resetDecodeState()
+    func warmup(request: MLXMimiWarmupRequest) throws
+    func encode(_ input: MLXMimiPCMInput) throws -> [MLXMimiEncodedFrame]
+}
+
+public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
+    private let model: MLXMimiModel
+
+    public init(model: MLXMimiModel = MLXMimiModel()) {
+        self.model = model
+    }
+
+    public func resetEncodeState() {
+        model.resetEncodeState()
+    }
+
+    public func resetDecodeState() {
+        model.resetDecodeState()
+    }
+
+    public func warmup(request: MLXMimiWarmupRequest) throws {
+        _ = MLXArray.zeros(request.pcmShape, type: Float32.self)
+        model.resetState()
+    }
+
+    public func encode(_ input: MLXMimiPCMInput) throws -> [MLXMimiEncodedFrame] {
+        _ = MLXMimiStreamArray(MLXArray(input.samples)[.newAxis, .newAxis])
+        return []
     }
 }
 
 public final class MLXMimiRuntime: @unchecked Sendable {
     public let artifact: PreparedModelArtifact
     public let configuration: MLXMimiRuntimeConfiguration
+    private let engine: MLXMimiRuntimeEngine
 
     public init(
         artifact: PreparedModelArtifact,
-        configuration: MLXMimiRuntimeConfiguration = .mimi202407
+        configuration: MLXMimiRuntimeConfiguration = .mimi202407,
+        engine: MLXMimiRuntimeEngine? = nil
     ) {
         self.artifact = artifact
         self.configuration = configuration
+        self.engine = engine ?? MLXMimiDefaultRuntimeEngine(
+            model: MLXMimiModel(
+                configuration: .mimi202407(codebookCount: configuration.codebookCount),
+                batchSize: 1
+            )
+        )
     }
 
-    public func resetEncodeState() {}
+    public func validateMetadata() throws {
+        guard configuration.sampleRate == 24_000 else {
+            throw MimiRuntimeError.incompatibleConfiguration(
+                "sampleRate expected 24000, got \(configuration.sampleRate)"
+            )
+        }
+        guard configuration.frameRate == 12.5 else {
+            throw MimiRuntimeError.incompatibleConfiguration(
+                "frameRate expected 12.5, got \(configuration.frameRate)"
+            )
+        }
+        guard configuration.codebookCount == 16 else {
+            throw MimiRuntimeError.incompatibleConfiguration(
+                "codebookCount expected 16, got \(configuration.codebookCount)"
+            )
+        }
+        guard configuration.quantizerBins == 2_048 else {
+            throw MimiRuntimeError.incompatibleConfiguration(
+                "quantizerBins expected 2048, got \(configuration.quantizerBins)"
+            )
+        }
+        guard configuration.samplesPerFrame == 1_920 else {
+            throw MimiRuntimeError.incompatibleConfiguration(
+                "samplesPerFrame expected 1920, got \(configuration.samplesPerFrame)"
+            )
+        }
+    }
 
-    public func resetDecodeState() {}
+    public func warmup(frameCount: Int = 4) throws {
+        try validateMetadata()
+        let sampleCount = configuration.samplesPerFrame * frameCount
+        let request = MLXMimiWarmupRequest(
+            pcmShape: [1, 1, sampleCount],
+            sampleCount: sampleCount,
+            frameCount: frameCount
+        )
+
+        do {
+            try engine.warmup(request: request)
+        } catch let error as MimiRuntimeError {
+            throw error
+        } catch {
+            throw MimiRuntimeError.warmupFailed(String(describing: error))
+        }
+    }
+
+    public func encode(_ input: MLXMimiPCMInput) throws -> [MLXMimiEncodedFrame] {
+        try validateMetadata()
+        do {
+            return try engine.encode(input)
+        } catch let error as MimiRuntimeError {
+            throw error
+        } catch {
+            throw MimiRuntimeError.loadFailed(String(describing: error))
+        }
+    }
+
+    public func resetEncodeState() {
+        engine.resetEncodeState()
+    }
+
+    public func resetDecodeState() {
+        engine.resetDecodeState()
+    }
 
     public func resetState() {
         resetEncodeState()
@@ -88,9 +229,11 @@ public struct MLXMimiRuntimeLoader: Sendable {
             throw MimiRuntimeError.missingArtifactFile(artifact.fileName)
         }
 
-        return MLXMimiRuntime(
+        let runtime = MLXMimiRuntime(
             artifact: artifact,
             configuration: configuration
         )
+        try runtime.validateMetadata()
+        return runtime
     }
 }
