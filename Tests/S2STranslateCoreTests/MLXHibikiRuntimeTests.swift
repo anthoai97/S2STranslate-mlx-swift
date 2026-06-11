@@ -147,6 +147,49 @@ struct MLXHibikiRuntimeTests {
         #expect(session.observations.playbackChunkCount == 2)
         #expect(session.observations.output == " real real")
     }
+
+    @Test("real file backend builds MLX Mimi and Hibiki components after preparation")
+    @MainActor
+    func realFileBackendBuildsMLXMimiAndHibikiComponentsAfterPreparation() async throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let mimiEngine = FakeRealBackendMimiRuntimeEngine()
+        let hibikiEngine = RecordingHibikiRuntimeEngine(
+            output: MLXHibikiStepOutput(
+                textToken: 901,
+                textPiece: " mlx",
+                textCandidateTokens: [901],
+                audioTokens: Array(1_000..<1_016)
+            )
+        )
+        let session = ExperimentSession(
+            backend: RealFileHibikiTranslationExperimentBackend(
+                artifactPreparer: ModelArtifactPreparer(
+                    manifest: .hibikiQ4Default,
+                    provider: PreparedArtifactProvider(artifacts: artifacts)
+                ),
+                audioSource: FixtureAudioInputSource(sampleRate: 24_000, chunkSampleCount: 1_920, chunkCount: 2),
+                inferenceSession: MLXHibikiInferenceSession(engine: hibikiEngine),
+                playbackSink: BufferedPlaybackSink(),
+                mimiRuntimeLoader: { artifacts in
+                    let mimiArtifact = artifacts.files.first { $0.role == "mimiWeights" }!
+                    return MLXMimiRuntime(artifact: mimiArtifact, engine: mimiEngine)
+                }
+            )
+        )
+
+        await session.prepare()
+        await session.start()
+
+        #expect(session.state == .running)
+        #expect(mimiEngine.encodeInputs.count == 2)
+        #expect(mimiEngine.decodeInputs.count == 2)
+        #expect(hibikiEngine.stepRequests.count == 2)
+        #expect(session.observations.mimiEncodedFrameCount == 2)
+        #expect(session.observations.hibikiStepCount == 2)
+        #expect(session.observations.decodedAudioChunkCount == 2)
+        #expect(session.observations.playbackChunkCount == 2)
+        #expect(session.observations.output == " mlx mlx")
+    }
 }
 
 private final class RecordingHibikiRuntimeEngine: MLXHibikiRuntimeEngine {
@@ -225,6 +268,35 @@ private actor PreparedArtifactProvider: ModelArtifactProviding {
             throw ModelArtifactPreparationError.missing(fileName)
         }
         return handle
+    }
+}
+
+private final class FakeRealBackendMimiRuntimeEngine: MLXMimiRuntimeEngine, @unchecked Sendable {
+    var resetEncodeCount = 0
+    var resetDecodeCount = 0
+    var encodeInputs: [MLXMimiPCMInput] = []
+    var decodeInputs: [MLXMimiTokenInput] = []
+
+    func resetEncodeState() {
+        resetEncodeCount += 1
+    }
+
+    func resetDecodeState() {
+        resetDecodeCount += 1
+    }
+
+    func warmup(request: MLXMimiWarmupRequest) throws {}
+
+    func encode(_ input: MLXMimiPCMInput) throws -> [MLXMimiEncodedFrame] {
+        encodeInputs.append(input)
+        return [
+            MLXMimiEncodedFrame(tokens: Array(300..<316)),
+        ]
+    }
+
+    func decode(_ input: MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] {
+        decodeInputs.append(input)
+        return [MLXMimiDecodedChunk(samples: [0.1, -0.1])]
     }
 }
 

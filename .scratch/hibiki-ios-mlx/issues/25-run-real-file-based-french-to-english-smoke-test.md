@@ -27,8 +27,8 @@ This is the first end-to-end real translation smoke test.
 
 - Prefer `French Europarl short 1` as the first smoke input.
 - This issue is not done if it only emits deterministic placeholder text or buffered silent audio.
-- Current checkpoints unblock playback with `AVAudioPlaybackSink`, add the real decode boundary for zero/one/many decoded chunks, wire the executable MLX Mimi decode graph, add the MLX Hibiki session/load boundary with a fake model-step seam, and record the manual smoke checklist in `docs/real-file-french-english-smoke-test.md`.
-- Remaining blockers are the real Hibiki model step/token sampling graph and app wiring to choose the real components for a French file smoke run before this can be marked done.
+- Current checkpoints unblock playback with `AVAudioPlaybackSink`, add the real decode boundary for zero/one/many decoded chunks, wire the executable MLX Mimi decode graph, add the MLX Hibiki session/load boundary with a fake model-step seam, add a real-file backend that constructs MLX Mimi encode/decode components after artifact preparation, and record the manual smoke checklist in `docs/real-file-french-english-smoke-test.md`.
+- Remaining blocker is the real Hibiki model step/token sampling graph before this can be marked done.
 
 ## Blocked by
 
