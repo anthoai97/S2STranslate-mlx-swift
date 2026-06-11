@@ -99,6 +99,7 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
 
     private let weightsReader: WeightsReader
     private var loaded = false
+    private var model: MLXHibikiLanguageModel?
 
     public init(
         weightsReader: @escaping WeightsReader = { url in
@@ -120,6 +121,7 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
     public func load(request: MLXHibikiLoadRequest) throws {
         let config = try MLXHibikiModelConfig.load(from: request.configURL)
         try config.validate(against: request.runtimeConfiguration)
+        let model = MLXHibikiLanguageModel(topology: config.topology)
 
         let summary = try weightsReader(request.weightsURL)
         guard summary.tensorCount > 0 else {
@@ -129,6 +131,7 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
             throw HibikiInferenceError.invalidArtifacts("hibiki weights missing depformer output LayerNorm tensors")
         }
 
+        self.model = model
         loaded = true
     }
 
@@ -145,6 +148,7 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
 
     public func reset() {
         loaded = false
+        model = nil
     }
 }
 

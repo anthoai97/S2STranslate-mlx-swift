@@ -27,8 +27,8 @@ This slice should focus on model construction, cache/state setup, and one-step e
 
 - This is likely the highest-risk issue. Prefer a narrow traceable implementation over broad optimization.
 - Keep `DeterministicHibikiInferenceSession` as the default for fast tests until the real path is stable.
-- Current checkpoint adds `MLXHibikiInferenceSession`, validates real prepared config/weights/tokenizer files, enforces q4 group size 32 and Hibiki-Zero architecture deltas, supports executable grouped-query `kv_repeat=2` + `rope_concat` attention in the shared MLX transformer, maps `config.json` into the full LM/Depformer topology, and exposes an engine seam for model stepping.
-- The default engine loads/validates the safetensors summary and graph topology but still throws for the full 3B MLX step graph. Remaining work is replacing the model-step seam with the actual LM/Depformer graph and weight assignment.
+- Current checkpoint adds `MLXHibikiInferenceSession`, validates real prepared config/weights/tokenizer files, enforces q4 group size 32 and Hibiki-Zero architecture deltas, supports executable grouped-query `kv_repeat=2` + `rope_concat` attention in the shared MLX transformer, maps `config.json` into the full LM/Depformer topology, builds an `MLXHibikiLanguageModel` graph shell during default engine load, and exposes an engine seam for model stepping.
+- The default engine loads/validates the safetensors summary and graph topology but still throws for the full 3B MLX step graph. Remaining work is replacing the model-step seam with weight assignment plus actual LM/Depformer graph execution.
 
 ## Blocked by
 

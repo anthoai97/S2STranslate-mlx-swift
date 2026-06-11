@@ -132,6 +132,32 @@ struct MLXHibikiRuntimeTests {
         ])
     }
 
+    @Test("MLX Hibiki language model owns real graph shell shapes")
+    func mlxHibikiLanguageModelOwnsRealGraphShellShapes() throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let request = try makeLoadRequest(artifacts: artifacts)
+        let config = try MLXHibikiModelConfig.load(from: request.configURL)
+
+        let model = MLXHibikiLanguageModel(topology: config.topology)
+
+        #expect(model.textEmbedding.weightShape == [48_001, 2_048])
+        #expect(model.audioEmbeddings.count == 32)
+        #expect(model.audioEmbeddings[0].weightShape == [2_049, 2_048])
+        #expect(model.transformer.layers.count == 28)
+        #expect(model.transformer.layers[0].selfAttention.keyValueHeadCount == 8)
+        #expect(model.transformer.layers[0].selfAttention.qkvProjection.weightShape == [4_096, 2_048])
+        #expect(model.textLinear.weightShape == [48_000, 2_048])
+        #expect(model.depformerSlices.count == 16)
+        #expect(model.depformerSlices[0].embedding.weightShape == [48_001, 1_024])
+        #expect(model.depformerSlices[1].embedding.weightShape == [2_049, 1_024])
+        #expect(model.depformerSlices[0].linearIn.weightShape == [1_024, 2_048])
+        #expect(model.depformerSlices[0].linearOut.weightShape == [2_048, 1_024])
+        #expect(model.depformerSlices[0].norm.weightShape == [1_024])
+        #expect(model.depformerSlices[0].norm.biasShape == [1_024])
+        #expect(model.depformerSlices[0].transformer.layers.count == 6)
+        #expect(model.depformerSlices[0].transformer.layers[0].selfAttention.qkvProjection.weightShape == [3_072, 1_024])
+    }
+
     @Test("MLX Hibiki default engine rejects missing architecture deltas")
     func mlxHibikiDefaultEngineRejectsMissingArchitectureDeltas() throws {
         let artifacts = try preparedHibikiArtifacts(
