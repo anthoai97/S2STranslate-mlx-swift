@@ -6,6 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		3A0000012FE0000000000001 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 3A0000052FE0000000000005 /* MLX */; };
+		3A0000022FE0000000000002 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 3A0000062FE0000000000006 /* MLXFast */; };
+		3A0000032FE0000000000003 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 3A0000072FE0000000000007 /* MLXNN */; };
+		3A0000042FE0000000000004 /* MLXRandom in Frameworks */ = {isa = PBXBuildFile; productRef = 3A0000082FE0000000000008 /* MLXRandom */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		2EDF47D22FD99D8A001D52DE /* S2STranslate.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = S2STranslate.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +30,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3A0000012FE0000000000001 /* MLX in Frameworks */,
+				3A0000022FE0000000000002 /* MLXFast in Frameworks */,
+				3A0000032FE0000000000003 /* MLXNN in Frameworks */,
+				3A0000042FE0000000000004 /* MLXRandom in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +76,10 @@
 			);
 			name = S2STranslate;
 			packageProductDependencies = (
+				3A0000052FE0000000000005 /* MLX */,
+				3A0000062FE0000000000006 /* MLXFast */,
+				3A0000072FE0000000000007 /* MLXNN */,
+				3A0000082FE0000000000008 /* MLXRandom */,
 			);
 			productName = S2STranslate;
 			productReference = 2EDF47D22FD99D8A001D52DE /* S2STranslate.app */;
@@ -94,6 +109,9 @@
 			);
 			mainGroup = 2EDF47C92FD99D89001D52DE;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				3A0000092FE0000000000009 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 2EDF47D32FD99D8A001D52DE /* Products */;
 			projectDirPath = "";
@@ -328,6 +346,40 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		3A0000092FE0000000000009 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			requirement = {
+				kind = revision;
+				revision = 70dbb62128a5a1471a5ab80363430adb33470cab;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		3A0000052FE0000000000005 /* MLX */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3A0000092FE0000000000009 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLX;
+		};
+		3A0000062FE0000000000006 /* MLXFast */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3A0000092FE0000000000009 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXFast;
+		};
+		3A0000072FE0000000000007 /* MLXNN */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3A0000092FE0000000000009 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXNN;
+		};
+		3A0000082FE0000000000008 /* MLXRandom */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 3A0000092FE0000000000009 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			productName = MLXRandom;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 2EDF47CA2FD99D89001D52DE /* Project object */;
 }
