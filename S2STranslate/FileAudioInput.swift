@@ -107,6 +107,12 @@ public final class FileAudioInputSource: AudioInputSource, @unchecked Sendable {
         stopped = true
     }
 
+    public func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        stopped = false
+    }
+
     private var isStopped: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -255,6 +261,12 @@ public final class RemoteAudioFileInputSource: AudioInputSource, @unchecked Send
         stopped = true
     }
 
+    public func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        stopped = false
+    }
+
     private var isStopped: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -314,6 +326,10 @@ public final class ConfigurableAudioInputSource: AudioInputSource, @unchecked Se
 
     public func stop() {
         source.stop()
+    }
+
+    public func reset() {
+        source.reset()
     }
 
     private var source: any AudioInputSource {

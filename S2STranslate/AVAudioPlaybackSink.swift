@@ -1,5 +1,8 @@
 @preconcurrency import AVFoundation
+import OSLog
 import Synchronization
+
+private let audioPlaybackLogger = Logger(subsystem: "andyq.S2STranslate", category: "AudioPlayback")
 
 protocol AudioPlaybackEngine: Sendable {
     func start(sampleRate: Int) throws
@@ -135,13 +138,19 @@ public final class DeferredAudioPlaybackSink: PlaybackSink, @unchecked Sendable 
             return (sampleRate, state.chunks)
         }
         guard !snapshot.1.isEmpty else { return }
+        let startedAt = Date()
+        let sampleCount = snapshot.1.reduce(0) { $0 + $1.samples.count }
+        let durationSeconds = Double(sampleCount) / Double(snapshot.0)
+        audioPlaybackLogger.info("deferred playback begin chunks=\(snapshot.1.count, privacy: .public) samples=\(sampleCount, privacy: .public) durationSeconds=\(durationSeconds, privacy: .public)")
 
         wrapped.reset()
         try await wrapped.start(sampleRate: snapshot.0)
         for chunk in snapshot.1 {
             try await wrapped.receive(chunk)
         }
+        audioPlaybackLogger.info("deferred playback scheduled chunks=\(snapshot.1.count, privacy: .public) elapsedSeconds=\(Date().timeIntervalSince(startedAt), privacy: .public)")
         try await wrapped.finish()
+        audioPlaybackLogger.info("deferred playback end elapsedSeconds=\(Date().timeIntervalSince(startedAt), privacy: .public)")
     }
 
     public func stop() {
@@ -161,6 +170,165 @@ public final class DeferredAudioPlaybackSink: PlaybackSink, @unchecked Sendable 
             state.chunks.removeAll()
         }
         wrapped.reset()
+    }
+}
+
+public final class BufferedStreamingAudioPlaybackSink: PlaybackSink, @unchecked Sendable {
+    private let wrapped: any PlaybackSink
+    private let prebufferDurationSeconds: Double
+    private let state = Mutex(BufferedStreamingAudioPlaybackSinkState())
+
+    public convenience init(prebufferDurationSeconds: Double = 2) {
+        self.init(
+            wrapped: AVAudioPlaybackSink(),
+            prebufferDurationSeconds: prebufferDurationSeconds
+        )
+    }
+
+    init(wrapped: any PlaybackSink, prebufferDurationSeconds: Double) {
+        self.wrapped = wrapped
+        self.prebufferDurationSeconds = prebufferDurationSeconds
+    }
+
+    public func start(sampleRate: Int) async throws {
+        state.withLock { state in
+            state.sampleRate = sampleRate
+            state.started = true
+            state.stopped = false
+            state.wrappedStarted = false
+            state.pendingChunks.removeAll()
+        }
+        wrapped.reset()
+        audioPlaybackLogger.info("buffered pseudo-streaming playback armed prebufferSeconds=\(self.prebufferDurationSeconds, privacy: .public)")
+    }
+
+    public func receive(_ chunk: DecodedAudioChunk) async throws {
+        let action = try state.withLock { state -> BufferedStreamingPlaybackAction in
+            guard state.started, !state.stopped else {
+                throw PlaybackSinkError.stopped
+            }
+            guard state.sampleRate == chunk.sampleRate else {
+                throw PlaybackSinkError.unavailable(
+                    "sample rate changed from \(state.sampleRate ?? 0) to \(chunk.sampleRate)"
+                )
+            }
+            guard !state.wrappedStarted else {
+                return .schedule([chunk])
+            }
+
+            state.pendingChunks.append(chunk)
+            let bufferedSeconds = state.pendingDurationSeconds
+            guard bufferedSeconds >= prebufferDurationSeconds else {
+                return .wait
+            }
+
+            state.wrappedStarted = true
+            let chunks = state.pendingChunks
+            state.pendingChunks.removeAll()
+            return .startAndSchedule(sampleRate: chunk.sampleRate, chunks: chunks, bufferedSeconds: bufferedSeconds)
+        }
+
+        try await perform(action)
+    }
+
+    public func finish() async throws {
+        let action = try state.withLock { state -> BufferedStreamingPlaybackAction in
+            guard state.started, !state.stopped else {
+                throw PlaybackSinkError.stopped
+            }
+            guard let sampleRate = state.sampleRate else {
+                throw PlaybackSinkError.stopped
+            }
+
+            if state.wrappedStarted {
+                let chunks = state.pendingChunks
+                state.pendingChunks.removeAll()
+                return chunks.isEmpty ? .finish : .scheduleThenFinish(chunks)
+            }
+
+            let chunks = state.pendingChunks
+            state.pendingChunks.removeAll()
+            guard !chunks.isEmpty else { return .finish }
+            state.wrappedStarted = true
+            return .startScheduleThenFinish(sampleRate: sampleRate, chunks: chunks)
+        }
+
+        try await perform(action)
+    }
+
+    public func stop() {
+        state.withLock { state in
+            state.started = false
+            state.stopped = true
+            state.wrappedStarted = false
+            state.pendingChunks.removeAll()
+        }
+        wrapped.stop()
+    }
+
+    public func reset() {
+        state.withLock { state in
+            state.sampleRate = nil
+            state.started = false
+            state.stopped = false
+            state.wrappedStarted = false
+            state.pendingChunks.removeAll()
+        }
+        wrapped.reset()
+    }
+
+    private func perform(_ action: BufferedStreamingPlaybackAction) async throws {
+        switch action {
+        case .wait:
+            return
+        case let .startAndSchedule(sampleRate, chunks, bufferedSeconds):
+            audioPlaybackLogger.info("buffered pseudo-streaming playback start chunks=\(chunks.count, privacy: .public) bufferedSeconds=\(bufferedSeconds, privacy: .public)")
+            try await wrapped.start(sampleRate: sampleRate)
+            for chunk in chunks {
+                try await wrapped.receive(chunk)
+            }
+        case let .schedule(chunks):
+            for chunk in chunks {
+                try await wrapped.receive(chunk)
+            }
+        case let .scheduleThenFinish(chunks):
+            for chunk in chunks {
+                try await wrapped.receive(chunk)
+            }
+            try await wrapped.finish()
+        case let .startScheduleThenFinish(sampleRate, chunks):
+            audioPlaybackLogger.info("buffered pseudo-streaming playback finish starts short stream chunks=\(chunks.count, privacy: .public)")
+            try await wrapped.start(sampleRate: sampleRate)
+            for chunk in chunks {
+                try await wrapped.receive(chunk)
+            }
+            try await wrapped.finish()
+        case .finish:
+            try await wrapped.finish()
+        }
+    }
+}
+
+private enum BufferedStreamingPlaybackAction {
+    case wait
+    case startAndSchedule(sampleRate: Int, chunks: [DecodedAudioChunk], bufferedSeconds: Double)
+    case schedule([DecodedAudioChunk])
+    case scheduleThenFinish([DecodedAudioChunk])
+    case startScheduleThenFinish(sampleRate: Int, chunks: [DecodedAudioChunk])
+    case finish
+}
+
+private struct BufferedStreamingAudioPlaybackSinkState: Sendable {
+    var sampleRate: Int?
+    var started = false
+    var stopped = false
+    var wrappedStarted = false
+    var pendingChunks: [DecodedAudioChunk] = []
+
+    var pendingDurationSeconds: Double {
+        guard let sampleRate, sampleRate > 0 else { return 0 }
+        let sampleCount = pendingChunks.reduce(0) { $0 + $1.samples.count }
+        return Double(sampleCount) / Double(sampleRate)
     }
 }
 
@@ -184,6 +352,7 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
     private var currentFormat: AVAudioFormat?
     private var attached = false
     private var pendingBufferCount = 0
+    private var pendingSampleCount = 0
     private var finishContinuations: [CheckedContinuation<Void, Never>] = []
 
     func start(sampleRate: Int) throws {
@@ -239,22 +408,34 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
         }
         pendingLock.lock()
         pendingBufferCount += 1
+        pendingSampleCount += samples.count
         pendingLock.unlock()
+        let scheduledSampleCount = samples.count
         player.scheduleBuffer(buffer) { [weak self] in
-            self?.completePendingBuffer()
+            self?.completePendingBuffer(sampleCount: scheduledSampleCount)
         }
     }
 
     func finish() async throws {
-        await withCheckedContinuation { continuation in
-            pendingLock.lock()
-            if pendingBufferCount == 0 {
-                pendingLock.unlock()
-                continuation.resume()
-            } else {
-                finishContinuations.append(continuation)
-                pendingLock.unlock()
+        let waitSeconds = finishWaitTimeoutSeconds()
+        audioPlaybackLogger.info("av playback finish wait begin pendingBuffers=\(self.pendingBufferSnapshot().buffers, privacy: .public) pendingSamples=\(self.pendingBufferSnapshot().samples, privacy: .public) timeoutSeconds=\(waitSeconds, privacy: .public)")
+        let startedAt = Date()
+        let timedOut = Mutex(false)
+        let timeoutTask = Task { [weak self] in
+            let nanoseconds = UInt64(waitSeconds * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard !Task.isCancelled, let self, self.pendingBufferSnapshot().buffers > 0 else {
+                return
             }
+            timedOut.withLock { $0 = true }
+            self.resolvePendingBuffers()
+        }
+        await waitForPendingBuffers()
+        timeoutTask.cancel()
+        if timedOut.withLock({ $0 }) {
+            audioPlaybackLogger.error("av playback finish timed out pendingBuffers=\(self.pendingBufferSnapshot().buffers, privacy: .public) pendingSamples=\(self.pendingBufferSnapshot().samples, privacy: .public) elapsedSeconds=\(Date().timeIntervalSince(startedAt), privacy: .public)")
+        } else {
+            audioPlaybackLogger.info("av playback finish wait end elapsedSeconds=\(Date().timeIntervalSince(startedAt), privacy: .public)")
         }
     }
 
@@ -270,9 +451,10 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
         stop()
     }
 
-    private func completePendingBuffer() {
+    private func completePendingBuffer(sampleCount: Int) {
         pendingLock.lock()
         pendingBufferCount = max(0, pendingBufferCount - 1)
+        pendingSampleCount = max(0, pendingSampleCount - sampleCount)
         let continuations = pendingBufferCount == 0 ? finishContinuations : []
         if pendingBufferCount == 0 {
             finishContinuations.removeAll()
@@ -285,10 +467,39 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
     private func resolvePendingBuffers() {
         pendingLock.lock()
         pendingBufferCount = 0
+        pendingSampleCount = 0
         let continuations = finishContinuations
         finishContinuations.removeAll()
         pendingLock.unlock()
 
         continuations.forEach { $0.resume() }
+    }
+
+    private func waitForPendingBuffers() async {
+        await withCheckedContinuation { continuation in
+            pendingLock.lock()
+            if pendingBufferCount == 0 {
+                pendingLock.unlock()
+                continuation.resume()
+            } else {
+                finishContinuations.append(continuation)
+                pendingLock.unlock()
+            }
+        }
+    }
+
+    private func finishWaitTimeoutSeconds() -> Double {
+        let snapshot = pendingBufferSnapshot()
+        guard let sampleRate = currentFormat?.sampleRate, sampleRate > 0 else {
+            return 5
+        }
+        let pendingDuration = Double(snapshot.samples) / sampleRate
+        return min(max(pendingDuration + 5, 5), 30)
+    }
+
+    private func pendingBufferSnapshot() -> (buffers: Int, samples: Int) {
+        pendingLock.lock()
+        defer { pendingLock.unlock() }
+        return (pendingBufferCount, pendingSampleCount)
     }
 }

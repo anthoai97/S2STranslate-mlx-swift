@@ -58,6 +58,40 @@ struct FileAudioInputTests {
         #expect(session.observations.output == " hello")
     }
 
+    @Test("file-based translation can run again after session stop")
+    @MainActor
+    func fileBasedTranslationCanRunAgainAfterSessionStop() async throws {
+        let url = try makeTemporaryWAV(sampleRate: 24_000, frameCount: 3_840)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let session = ExperimentSession(
+            backend: HibikiTranslationExperimentBackend(
+                artifactPreparer: ModelArtifactPreparer(
+                    manifest: .hibikiQ4Default,
+                    provider: DemoModelArtifactProvider()
+                ),
+                audioSource: FileAudioInputSource(fileURL: url, targetSampleRate: 24_000, chunkSampleCount: 1_920),
+                mimiEncoder: DeterministicMimiStreamingEncoder(),
+                inferenceSession: DeterministicHibikiInferenceSession(),
+                mimiDecoder: DeterministicMimiStreamingDecoder(),
+                playbackSink: BufferedPlaybackSink()
+            )
+        )
+
+        await session.prepare()
+        await session.start()
+        session.stop()
+        session.newSession()
+
+        await session.prepare()
+        await session.start()
+
+        #expect(session.observations.audioChunkCount == 2)
+        #expect(session.observations.mimiEncodedFrameCount == 2)
+        #expect(session.observations.hibikiStepCount == 2)
+        #expect(session.observations.playbackChunkCount == 2)
+    }
+
     @Test("missing audio file reaches unavailable error")
     func missingAudioFileFailsClearly() async throws {
         let source = FileAudioInputSource(

@@ -84,6 +84,11 @@ public protocol AudioInputSource: Sendable {
     func description() async -> AudioInputDescription
     func chunks() async throws -> [PCMChunk]
     func stop()
+    func reset()
+}
+
+public extension AudioInputSource {
+    func reset() {}
 }
 
 public final class FixtureAudioInputSource: AudioInputSource, @unchecked Sendable {
@@ -145,6 +150,12 @@ public final class FixtureAudioInputSource: AudioInputSource, @unchecked Sendabl
         stopped = true
     }
 
+    public func reset() {
+        lock.lock()
+        defer { lock.unlock() }
+        stopped = false
+    }
+
     private var isStopped: Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -184,6 +195,8 @@ public struct AudioInputExperimentBackend: ExperimentBackend, Sendable {
     }
 
     public func runEvents() async -> [ExperimentEvent] {
+        source.reset()
+
         let description = await source.description()
         var events: [ExperimentEvent] = [
             .audioInput(.streamStarted(sampleRate: description.sampleRate)),
@@ -227,6 +240,7 @@ public struct SourceAudioPlaybackExperimentBackend: ExperimentBackend, Sendable 
     }
 
     public func runEvents() async -> [ExperimentEvent] {
+        source.reset()
         playbackSink.reset()
 
         let description = await source.description()

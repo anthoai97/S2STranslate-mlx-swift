@@ -435,18 +435,16 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
         return events
     }
 
-    public func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+    public func prepareEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async {
         hibikiBackendLogger.info("deterministic prepare artifact begin")
         let result = await artifactPreparer.prepare { artifactProgress in
-            await MainActor.run {
-                send(.artifactPreparationProgress(artifactProgress))
-                send(.preparationProgress(artifactProgress.overallFractionCompleted))
-            }
+            await send(.artifactPreparationProgress(artifactProgress))
+            await send(.preparationProgress(artifactProgress.overallFractionCompleted))
         }
         hibikiBackendLogger.info("deterministic prepare artifact end files=\(result.artifacts?.files.count ?? 0, privacy: .public) failure=\(result.failure == nil ? "none" : "present", privacy: .public)")
 
         for event in await terminalPrepareEvents(from: result) {
-            send(event)
+            await send(event)
         }
     }
 
@@ -503,6 +501,7 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
 
     public func runEvents() async -> [ExperimentEvent] {
         hibikiBackendLogger.info("deterministic run begin")
+        source.reset()
         encoder.reset()
         decoder.reset()
         playbackSink.reset()
@@ -627,18 +626,16 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
         return events
     }
 
-    public func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+    public func prepareEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async {
         hibikiBackendLogger.info("real-file prepare artifact begin")
         let result = await artifactPreparer.prepare { artifactProgress in
-            await MainActor.run {
-                send(.artifactPreparationProgress(artifactProgress))
-                send(.preparationProgress(artifactProgress.overallFractionCompleted))
-            }
+            await send(.artifactPreparationProgress(artifactProgress))
+            await send(.preparationProgress(artifactProgress.overallFractionCompleted))
         }
         hibikiBackendLogger.info("real-file prepare artifact end files=\(result.artifacts?.files.count ?? 0, privacy: .public) failure=\(result.failure == nil ? "none" : "present", privacy: .public)")
 
         for event in await terminalPrepareEvents(from: result) {
-            send(event)
+            await send(event)
         }
     }
 
@@ -718,35 +715,67 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
     }
 
     public func runEvents() async -> [ExperimentEvent] {
+        await collectRunEvents(sendEvent: nil)
+    }
+
+    public func runEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async {
+        _ = await collectRunEvents(sendEvent: send)
+    }
+
+    private func collectRunEvents(sendEvent: (@Sendable (ExperimentEvent) async -> Void)?) async -> [ExperimentEvent] {
         guard let prepared = components.load() else {
             hibikiBackendLogger.error("real-file run missing prepared components")
-            return [.failure(HibikiInferenceError.notInitialized.userVisibleMessage)]
+            let event = ExperimentEvent.failure(HibikiInferenceError.notInitialized.userVisibleMessage)
+            if let sendEvent {
+                await sendEvent(event)
+            }
+            return [event]
+        }
+
+        let runStartedAt = Date()
+        func elapsedSeconds() -> Double {
+            Date().timeIntervalSince(runStartedAt)
         }
 
         hibikiBackendLogger.info("real-file run begin")
         let encoder = prepared.encoder
         let decoder = prepared.decoder
+        source.reset()
         encoder.reset()
         decoder.reset()
         playbackSink.reset()
 
+        let descriptionStartedAt = Date()
         let audioDescription = await source.description()
         let encoderDescription = await encoder.description()
         let decoderDescription = await decoder.description()
-        var events: [ExperimentEvent] = [
-            .audioInput(.streamStarted(sampleRate: audioDescription.sampleRate)),
-            .mimiEncode(.streamStarted(encoderDescription)),
-            .mimiDecode(.streamStarted(decoderDescription)),
-        ]
+        hibikiBackendLogger.info("real-file descriptions ready audioRate=\(audioDescription.sampleRate, privacy: .public) encoderFrame=\(encoderDescription.samplesPerFrame, privacy: .public) decoderRate=\(decoderDescription.sampleRate, privacy: .public) phaseSeconds=\(Date().timeIntervalSince(descriptionStartedAt), privacy: .public) elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
+        var events: [ExperimentEvent] = []
+
+        func emit(_ event: ExperimentEvent) async {
+            events.append(event)
+            if let sendEvent {
+                await sendEvent(event)
+            }
+        }
+
+        await emit(.audioInput(.streamStarted(sampleRate: audioDescription.sampleRate)))
+        await emit(.mimiEncode(.streamStarted(encoderDescription)))
+        await emit(.mimiDecode(.streamStarted(decoderDescription)))
 
         do {
+            let playbackStartStartedAt = Date()
             try await playbackSink.start(sampleRate: decoderDescription.sampleRate)
-            events.append(.playback(.streamStarted(sampleRate: decoderDescription.sampleRate)))
+            await emit(.playback(.streamStarted(sampleRate: decoderDescription.sampleRate)))
+            hibikiBackendLogger.info("real-file playback sink started phaseSeconds=\(Date().timeIntervalSince(playbackStartStartedAt), privacy: .public) elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
 
             var nextAudioFrameIndex = 0
+            let sourceLoadStartedAt = Date()
             let chunks = try await source.chunks()
+            hibikiBackendLogger.info("real-file source chunks loaded count=\(chunks.count, privacy: .public) phaseSeconds=\(Date().timeIntervalSince(sourceLoadStartedAt), privacy: .public) elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
+            var processedChunkCount = 0
             for chunk in chunks {
-                events.append(.audioInput(.chunk(chunk)))
+                await emit(.audioInput(.chunk(chunk)))
                 nextAudioFrameIndex = max(nextAudioFrameIndex, chunk.frameIndex + 1)
                 for sourceTokens in try await encoder.encode(chunk) {
                     _ = try await appendHibikiGeneratedFrameEvents(
@@ -754,12 +783,20 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
                         inferenceSession: inferenceSession,
                         decoder: decoder,
                         playbackSink: playbackSink,
-                        events: &events
+                        events: &events,
+                        sendEvent: sendEvent
                     )
+                }
+                processedChunkCount += 1
+                if processedChunkCount == chunks.count || processedChunkCount % 10 == 0 {
+                    hibikiBackendLogger.info("real-file progress sourceChunks=\(processedChunkCount, privacy: .public)/\(chunks.count, privacy: .public) events=\(events.count, privacy: .public) elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
+                    await Task.yield()
                 }
             }
 
-            events.append(.audioInput(.streamStopped))
+            await emit(.audioInput(.streamStopped))
+            let tailFlushStartedAt = Date()
+            hibikiBackendLogger.info("real-file tail flush begin maxFrames=\(generationConfiguration.tailSilenceFrameCount, privacy: .public) elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
             try await appendHibikiTailFlushEvents(
                 encoderDescription: encoderDescription,
                 generationConfiguration: generationConfiguration,
@@ -768,39 +805,44 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
                 inferenceSession: inferenceSession,
                 decoder: decoder,
                 playbackSink: playbackSink,
-                events: &events
+                events: &events,
+                sendEvent: sendEvent
             )
-            events.append(.mimiEncode(.streamStopped))
-            events.append(.hibikiInference(.streamStopped))
-            events.append(.mimiDecode(.streamStopped))
+            hibikiBackendLogger.info("real-file tail flush end phaseSeconds=\(Date().timeIntervalSince(tailFlushStartedAt), privacy: .public) events=\(events.count, privacy: .public) elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
+            await emit(.mimiEncode(.streamStopped))
+            await emit(.hibikiInference(.streamStopped))
+            await emit(.mimiDecode(.streamStopped))
+            let playbackFinishStartedAt = Date()
+            hibikiBackendLogger.info("real-file playback finish begin elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
             try await playbackSink.finish()
-            events.append(.playback(.streamStopped))
-            hibikiBackendLogger.info("real-file run end events=\(events.count, privacy: .public)")
+            hibikiBackendLogger.info("real-file playback finish end phaseSeconds=\(Date().timeIntervalSince(playbackFinishStartedAt), privacy: .public) elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
+            await emit(.playback(.streamStopped))
+            hibikiBackendLogger.info("real-file run end events=\(events.count, privacy: .public) elapsedSeconds=\(elapsedSeconds(), privacy: .public)")
         } catch let error as AudioInputError {
             hibikiBackendLogger.error("real-file audio input failed: \(error.userVisibleMessage, privacy: .public)")
-            events.append(.audioInput(.streamFailed(error.userVisibleMessage)))
-            events.append(.failure(error.userVisibleMessage))
+            await emit(.audioInput(.streamFailed(error.userVisibleMessage)))
+            await emit(.failure(error.userVisibleMessage))
         } catch let error as MimiEncodeError {
             hibikiBackendLogger.error("real-file mimi encode failed: \(error.userVisibleMessage, privacy: .public)")
-            events.append(.mimiEncode(.streamFailed(error.userVisibleMessage)))
-            events.append(.failure(error.userVisibleMessage))
+            await emit(.mimiEncode(.streamFailed(error.userVisibleMessage)))
+            await emit(.failure(error.userVisibleMessage))
         } catch let error as HibikiInferenceError {
             hibikiBackendLogger.error("real-file hibiki step failed: \(error.userVisibleMessage, privacy: .public)")
-            events.append(.hibikiInference(.streamFailed(error.userVisibleMessage)))
-            events.append(.failure(error.userVisibleMessage))
+            await emit(.hibikiInference(.streamFailed(error.userVisibleMessage)))
+            await emit(.failure(error.userVisibleMessage))
         } catch let error as MimiDecodeError {
             hibikiBackendLogger.error("real-file mimi decode failed: \(error.userVisibleMessage, privacy: .public)")
-            events.append(.mimiDecode(.streamFailed(error.userVisibleMessage)))
-            events.append(.failure(error.userVisibleMessage))
+            await emit(.mimiDecode(.streamFailed(error.userVisibleMessage)))
+            await emit(.failure(error.userVisibleMessage))
         } catch let error as PlaybackSinkError {
             hibikiBackendLogger.error("real-file playback failed: \(error.userVisibleMessage, privacy: .public)")
-            events.append(.playback(.streamFailed(error.userVisibleMessage)))
-            events.append(.failure(error.userVisibleMessage))
+            await emit(.playback(.streamFailed(error.userVisibleMessage)))
+            await emit(.failure(error.userVisibleMessage))
         } catch {
             let message = HibikiInferenceError.unavailable(String(describing: error)).userVisibleMessage
             hibikiBackendLogger.error("real-file run failed: \(message, privacy: .public)")
-            events.append(.hibikiInference(.streamFailed(message)))
-            events.append(.failure(message))
+            await emit(.hibikiInference(.streamFailed(message)))
+            await emit(.failure(message))
         }
 
         return events
@@ -846,20 +888,28 @@ private func appendHibikiGeneratedFrameEvents(
     inferenceSession: any HibikiInferenceSession,
     decoder: any MimiStreamingDecoder,
     playbackSink: any PlaybackSink,
-    events: inout [ExperimentEvent]
+    events: inout [ExperimentEvent],
+    sendEvent: (@Sendable (ExperimentEvent) async -> Void)? = nil
 ) async throws -> HibikiTextOutput {
-    events.append(.mimiEncode(.frame(sourceTokens)))
-    events.append(.hibikiInference(.sourceTokens(sourceTokens)))
+    func emit(_ event: ExperimentEvent) async {
+        events.append(event)
+        if let sendEvent {
+            await sendEvent(event)
+        }
+    }
+
+    await emit(.mimiEncode(.frame(sourceTokens)))
+    await emit(.hibikiInference(.sourceTokens(sourceTokens)))
 
     let step = try await inferenceSession.step(sourceAudioTokens: sourceTokens)
-    events.append(.hibikiInference(.step(step)))
-    events.append(.hibikiInference(.text(step.text)))
-    events.append(.hibikiInference(.generatedAudio(step.generatedAudioTokens)))
+    await emit(.hibikiInference(.step(step)))
+    await emit(.hibikiInference(.text(step.text)))
+    await emit(.hibikiInference(.generatedAudio(step.generatedAudioTokens)))
 
     for decoded in try await decoder.decode(step.generatedAudioTokens) {
-        events.append(.mimiDecode(.chunk(decoded)))
+        await emit(.mimiDecode(.chunk(decoded)))
         try await playbackSink.receive(decoded)
-        events.append(.playback(.chunk(decoded)))
+        await emit(.playback(.chunk(decoded)))
     }
 
     return step.text
@@ -873,7 +923,8 @@ private func appendHibikiTailFlushEvents(
     inferenceSession: any HibikiInferenceSession,
     decoder: any MimiStreamingDecoder,
     playbackSink: any PlaybackSink,
-    events: inout [ExperimentEvent]
+    events: inout [ExperimentEvent],
+    sendEvent: (@Sendable (ExperimentEvent) async -> Void)? = nil
 ) async throws {
     guard generationConfiguration.tailSilenceFrameCount > 0 else { return }
 
@@ -895,11 +946,15 @@ private func appendHibikiTailFlushEvents(
                 inferenceSession: inferenceSession,
                 decoder: decoder,
                 playbackSink: playbackSink,
-                events: &events
+                events: &events,
+                sendEvent: sendEvent
             )
             if stopDetector.shouldStop(after: text) {
                 return
             }
+        }
+        if tailFrameIndex % 10 == 9 {
+            await Task.yield()
         }
     }
 }

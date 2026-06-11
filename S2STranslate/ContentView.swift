@@ -128,50 +128,63 @@ struct ContentView: View {
         RealFileHibikiTranslationExperimentBackend(
             artifactPreparer: artifactPreparer,
             audioSource: audioSource,
-            playbackSink: DeferredAudioPlaybackSink(),
+            playbackSink: BufferedStreamingAudioPlaybackSink(prebufferDurationSeconds: 2),
             generationConfiguration: generationConfiguration
         )
         #endif
     }
 
     private var bottomControls: some View {
-        ZStack {
-            Button(action: performPrimaryAction) {
-                Label(primaryActionTitle, systemImage: primaryActionIcon)
-                    .font(.title2)
-                    .frame(minWidth: 140)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(session.state == .preparing)
-
-            HStack {
-                Spacer()
-
+        VStack(spacing: 12) {
+            if shouldShowPreloadButton {
                 Button {
-                    showSettings.toggle()
+                    Task { await preloadModel() }
                 } label: {
-                    Image(systemName: "gear")
-                        .font(.title2)
+                    Label("Preload Model", systemImage: "externaldrive.fill")
+                        .frame(minWidth: 180)
                 }
-                .buttonStyle(.borderless)
-                .popover(isPresented: $showSettings, arrowEdge: .bottom) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Toggle(isOn: $showPlaceholderObservations) {
-                            Label("Session Observations", systemImage: "chart.bar")
-                        }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
 
-                        Button(role: .destructive) {
-                            showSettings = false
-                            session.triggerFailureDemo()
-                        } label: {
-                            Label("Trigger Failure Demo", systemImage: "exclamationmark.triangle.fill")
-                        }
-                        .disabled(isTerminal)
+            ZStack {
+                Button(action: performPrimaryAction) {
+                    Label(primaryActionTitle, systemImage: primaryActionIcon)
+                        .font(.title2)
+                        .frame(minWidth: 140)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(session.state == .preparing)
+
+                HStack {
+                    Spacer()
+
+                    Button {
+                        showSettings.toggle()
+                    } label: {
+                        Image(systemName: "gear")
+                            .font(.title2)
                     }
-                    .padding()
-                    .frame(minWidth: 260)
-                    .presentationCompactAdaptation(.popover)
+                    .buttonStyle(.borderless)
+                    .popover(isPresented: $showSettings, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Toggle(isOn: $showPlaceholderObservations) {
+                                Label("Session Observations", systemImage: "chart.bar")
+                            }
+
+                            Button(role: .destructive) {
+                                showSettings = false
+                                session.triggerFailureDemo()
+                            } label: {
+                                Label("Trigger Failure Demo", systemImage: "exclamationmark.triangle.fill")
+                            }
+                            .disabled(isTerminal)
+                        }
+                        .padding()
+                        .frame(minWidth: 260)
+                        .presentationCompactAdaptation(.popover)
+                    }
                 }
             }
         }
@@ -231,6 +244,10 @@ struct ContentView: View {
         case .preparing:
             break
         }
+    }
+
+    private func preloadModel() async {
+        await session.prepare()
     }
 
     private func prepareAndStart() async {
@@ -301,6 +318,10 @@ struct ContentView: View {
 
     private var hasActivity: Bool {
         session.state != .unloaded || session.observations.eventCount > 0
+    }
+
+    private var shouldShowPreloadButton: Bool {
+        runMode.selectedMode == .translate && session.state == .unloaded
     }
 
     private var canChangeConfiguration: Bool {
@@ -454,12 +475,16 @@ private struct DemoModeExperimentBackend: ExperimentBackend, Sendable {
         await selectedBackend.prepareEvents()
     }
 
-    func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+    func prepareEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async {
         await selectedBackend.prepareEvents(send: send)
     }
 
     func runEvents() async -> [ExperimentEvent] {
         await selectedBackend.runEvents()
+    }
+
+    func runEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async {
+        await selectedBackend.runEvents(send: send)
     }
 
     func stop() {

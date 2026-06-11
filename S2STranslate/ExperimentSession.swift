@@ -21,12 +21,15 @@ public final class ExperimentSession: ObservableObject {
     }
 
     public func prepare() async {
+        let startedAt = Date()
         logger.info("prepare begin state=\(String(describing: self.state), privacy: .public)")
         state = .preparing
         await backend.prepareEvents { [weak self] event in
-            self?.apply(event)
+            await MainActor.run {
+                self?.apply(event)
+            }
         }
-        logger.info("prepare end state=\(String(describing: self.state), privacy: .public) events=\(self.observations.eventCount, privacy: .public)")
+        logger.info("prepare end state=\(String(describing: self.state), privacy: .public) events=\(self.observations.eventCount, privacy: .public) elapsedSeconds=\(Date().timeIntervalSince(startedAt), privacy: .public)")
     }
 
     public func start() async {
@@ -35,12 +38,15 @@ public final class ExperimentSession: ObservableObject {
             return
         }
 
+        let startedAt = Date()
         logger.info("start begin")
         state = .running
-        for event in await backend.runEvents() {
-            apply(event)
+        await backend.runEvents { [weak self] event in
+            await MainActor.run {
+                self?.apply(event)
+            }
         }
-        logger.info("start end state=\(String(describing: self.state), privacy: .public) events=\(self.observations.eventCount, privacy: .public)")
+        logger.info("start end state=\(String(describing: self.state), privacy: .public) events=\(self.observations.eventCount, privacy: .public) elapsedSeconds=\(Date().timeIntervalSince(startedAt), privacy: .public)")
     }
 
     public func stop() {
@@ -356,18 +362,24 @@ public struct ExperimentObservations: Equatable {
     }
 }
 
-@MainActor
-public protocol ExperimentBackend {
+public protocol ExperimentBackend: Sendable {
     func prepareEvents() async -> [ExperimentEvent]
-    func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async
+    func prepareEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async
     func runEvents() async -> [ExperimentEvent]
+    func runEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async
     func stop()
 }
 
 public extension ExperimentBackend {
-    func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+    func prepareEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async {
         for event in await prepareEvents() {
-            send(event)
+            await send(event)
+        }
+    }
+
+    func runEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async {
+        for event in await runEvents() {
+            await send(event)
         }
     }
 
@@ -396,7 +408,7 @@ public struct ScriptedExperimentBackend: ExperimentBackend {
     }
 }
 
-public enum ExperimentEvent: Equatable {
+public enum ExperimentEvent: Equatable, Sendable {
     case preparationProgress(Double)
     case artifactPreparationProgress(ArtifactPreparationProgress)
     case observation(String)

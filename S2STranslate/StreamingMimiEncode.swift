@@ -291,6 +291,7 @@ public struct MimiEncodeExperimentBackend: ExperimentBackend, Sendable {
     }
 
     public func runEvents() async -> [ExperimentEvent] {
+        source.reset()
         encoder.reset()
 
         let audioDescription = await source.description()

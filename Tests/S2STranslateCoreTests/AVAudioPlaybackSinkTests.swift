@@ -111,6 +111,54 @@ struct AVAudioPlaybackSinkTests {
         #expect(engine.scheduledSampleCounts == [3, 2])
         #expect(engine.finishCount == 1)
     }
+
+    @Test("buffered streaming playback starts after prebuffer threshold")
+    func bufferedStreamingPlaybackStartsAfterPrebufferThreshold() async throws {
+        let engine = RecordingAudioPlaybackEngine()
+        let sink = BufferedStreamingAudioPlaybackSink(
+            wrapped: AVAudioPlaybackSink(engine: engine),
+            prebufferDurationSeconds: 0.2
+        )
+
+        try await sink.start(sampleRate: 10)
+        try await sink.receive(
+            DecodedAudioChunk(
+                frameIndex: 0,
+                timestampMilliseconds: 0,
+                sampleRate: 10,
+                samples: [0.1],
+                sourceTokenFrameIndex: 0
+            )
+        )
+        #expect(engine.startedSampleRates.isEmpty)
+        #expect(engine.scheduledSampleCounts.isEmpty)
+
+        try await sink.receive(
+            DecodedAudioChunk(
+                frameIndex: 1,
+                timestampMilliseconds: 100,
+                sampleRate: 10,
+                samples: [0.2],
+                sourceTokenFrameIndex: 1
+            )
+        )
+        #expect(engine.startedSampleRates == [10])
+        #expect(engine.scheduledSampleCounts == [1, 1])
+
+        try await sink.receive(
+            DecodedAudioChunk(
+                frameIndex: 2,
+                timestampMilliseconds: 200,
+                sampleRate: 10,
+                samples: [0.3],
+                sourceTokenFrameIndex: 2
+            )
+        )
+        try await sink.finish()
+
+        #expect(engine.scheduledSampleCounts == [1, 1, 1])
+        #expect(engine.finishCount == 1)
+    }
 }
 
 private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecked Sendable {

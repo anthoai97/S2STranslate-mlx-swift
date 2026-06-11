@@ -465,16 +465,14 @@ public struct ModelArtifactExperimentBackend: ExperimentBackend, Sendable {
         return events(for: result)
     }
 
-    public func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+    public func prepareEvents(send: @escaping @Sendable (ExperimentEvent) async -> Void) async {
         let result = await preparer.prepare { artifactProgress in
-            await MainActor.run {
-                send(.artifactPreparationProgress(artifactProgress))
-                send(.preparationProgress(artifactProgress.overallFractionCompleted))
-            }
+            await send(.artifactPreparationProgress(artifactProgress))
+            await send(.preparationProgress(artifactProgress.overallFractionCompleted))
         }
 
         for event in terminalEvents(for: result) {
-            send(event)
+            await send(event)
         }
     }
 

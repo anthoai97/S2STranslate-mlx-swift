@@ -416,6 +416,7 @@ public struct MimiCodecPlaybackExperimentBackend: ExperimentBackend, Sendable {
     }
 
     public func runEvents() async -> [ExperimentEvent] {
+        source.reset()
         encoder.reset()
         decoder.reset()
         playbackSink.reset()
