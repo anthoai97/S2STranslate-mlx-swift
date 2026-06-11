@@ -121,6 +121,72 @@ public struct DictionaryHibikiTextTokenDecoder: HibikiTextTokenDecoding {
     }
 }
 
+public struct HibikiSampledToken: Equatable, Sendable {
+    public var token: Int
+    public var candidateTokens: [Int]
+
+    public init(token: Int, candidateTokens: [Int]) {
+        self.token = token
+        self.candidateTokens = candidateTokens
+    }
+}
+
+public enum HibikiTokenSamplingError: Error, Equatable, Sendable {
+    case emptyLogits
+    case invalidTemperature(Double)
+    case invalidRandomValue(Double)
+}
+
+public struct HibikiTopKTokenSampler: Sendable {
+    public init() {}
+
+    public func sample(
+        logits: [Float],
+        temperature: Double,
+        topK: Int,
+        randomUnit: Double
+    ) throws -> HibikiSampledToken {
+        guard !logits.isEmpty else {
+            throw HibikiTokenSamplingError.emptyLogits
+        }
+        guard temperature >= 0 else {
+            throw HibikiTokenSamplingError.invalidTemperature(temperature)
+        }
+        guard randomUnit >= 0, randomUnit <= 1 else {
+            throw HibikiTokenSamplingError.invalidRandomValue(randomUnit)
+        }
+
+        let ranked = logits.enumerated().sorted { lhs, rhs in
+            if lhs.element == rhs.element {
+                return lhs.offset < rhs.offset
+            }
+            return lhs.element > rhs.element
+        }
+        let candidateCount = topK > 0 ? min(topK, ranked.count) : ranked.count
+        let candidates = Array(ranked.prefix(candidateCount))
+        let candidateTokens = candidates.map(\.offset)
+
+        guard temperature > 0 else {
+            return HibikiSampledToken(token: candidates[0].offset, candidateTokens: candidateTokens)
+        }
+
+        let scaled = candidates.map { Double($0.element) / temperature }
+        let maxScaled = scaled.max() ?? 0
+        let weights = scaled.map { exp($0 - maxScaled) }
+        let totalWeight = weights.reduce(0, +)
+        let threshold = randomUnit * totalWeight
+        var cumulative = 0.0
+        for (index, weight) in weights.enumerated() {
+            cumulative += weight
+            if threshold <= cumulative {
+                return HibikiSampledToken(token: candidates[index].offset, candidateTokens: candidateTokens)
+            }
+        }
+
+        return HibikiSampledToken(token: candidates[candidates.count - 1].offset, candidateTokens: candidateTokens)
+    }
+}
+
 public struct HibikiInferenceStep: Equatable, Sendable {
     public var frameIndex: Int
     public var sourceAudioTokens: MimiTokenFrame

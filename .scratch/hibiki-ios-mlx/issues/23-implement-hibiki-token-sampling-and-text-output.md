@@ -12,20 +12,20 @@ Complete the real Hibiki generation loop around the MLX model step. The session 
 
 ## Acceptance criteria
 
-- [ ] Generation uses temperature `0.8` and top-k `250` defaults for text and audio streams unless explicitly configured otherwise.
-- [ ] Text token output is decoded into visible English text pieces when available.
-- [ ] Blank/padding text tokens such as `0` and `3` are handled according to the confirmed contract.
+- [x] Generation uses temperature `0.8` and top-k `250` defaults for text and audio streams unless explicitly configured otherwise.
+- [x] Text token output is decoded into visible English text pieces when available.
+- [x] Blank/padding text tokens such as `0` and `3` are handled according to the confirmed contract.
 - [ ] Offline/file input end forces source-audio EOS behavior and continues sampling until the Text Pad Stop condition is reached.
 - [ ] Target audio-token frames continue to stream while text is emitted.
 - [ ] Session observations report text token count, visible text count, generated audio frame count, and sampling summary.
-- [ ] Tests cover sampling configuration, blank/padding skipping, text accumulation, and post-input stop using fake logits/tokenizer seams.
+- [x] Tests cover sampling configuration, blank/padding skipping, text accumulation, and post-input stop using fake logits/tokenizer seams.
 - [ ] Reference trace comparison records event order and token-shape parity against the Python reference where possible.
 
 ## Notes
 
 - Keep voice transfer disabled until a real supported control is implemented.
 - This issue should not implement audio playback; it should only emit generated audio token frames to the existing decode path.
-- Current checkpoint preserves the `0.8`/top-k `250` default configuration surface, adds a tokenizer-decoding seam that normalizes SentencePiece word markers for visible text, and adds opt-in file tail flushing: after source input ends the backend can feed silence frames and stop after sustained blank/pad text tokens (`0`/`3`), matching the Python reference's `PAD_STOP` behavior. Full logits sampling and real SentencePiece loading remain.
+- Current checkpoint preserves the `0.8`/top-k `250` default configuration surface, adds a tokenizer-decoding seam that normalizes SentencePiece word markers for visible text, adds a deterministic top-k sampler contract for fake logits, and adds opt-in file tail flushing: after source input ends the backend can feed silence frames and stop after sustained blank/pad text tokens (`0`/`3`), matching the Python reference's `PAD_STOP` behavior. Full model logits integration and real SentencePiece loading remain.
 
 ## Blocked by
 

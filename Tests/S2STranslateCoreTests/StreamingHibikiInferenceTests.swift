@@ -45,6 +45,56 @@ struct StreamingHibikiInferenceTests {
         #expect(second.generatedAudioTokens.frameIndex == 1)
     }
 
+    @Test("top-k sampler reports candidates and supports greedy selection")
+    func topKSamplerReportsCandidatesAndSupportsGreedySelection() throws {
+        let sampler = HibikiTopKTokenSampler()
+
+        let sample = try sampler.sample(
+            logits: [0.5, 1.5, 1.0, -2.0],
+            temperature: 0,
+            topK: 2,
+            randomUnit: 1
+        )
+
+        #expect(sample == HibikiSampledToken(token: 1, candidateTokens: [1, 2]))
+    }
+
+    @Test("top-k sampler samples only within configured candidate set")
+    func topKSamplerSamplesOnlyWithinConfiguredCandidateSet() throws {
+        let sampler = HibikiTopKTokenSampler()
+
+        let first = try sampler.sample(
+            logits: [0, 0, -100],
+            temperature: 1,
+            topK: 2,
+            randomUnit: 0
+        )
+        let second = try sampler.sample(
+            logits: [0, 0, -100],
+            temperature: 1,
+            topK: 2,
+            randomUnit: 1
+        )
+
+        #expect(first == HibikiSampledToken(token: 0, candidateTokens: [0, 1]))
+        #expect(second == HibikiSampledToken(token: 1, candidateTokens: [0, 1]))
+    }
+
+    @Test("top-k sampler rejects malformed sampling inputs")
+    func topKSamplerRejectsMalformedSamplingInputs() throws {
+        let sampler = HibikiTopKTokenSampler()
+
+        #expect(throws: HibikiTokenSamplingError.emptyLogits) {
+            _ = try sampler.sample(logits: [], temperature: 1, topK: 1, randomUnit: 0)
+        }
+        #expect(throws: HibikiTokenSamplingError.invalidTemperature(-0.1)) {
+            _ = try sampler.sample(logits: [0], temperature: -0.1, topK: 1, randomUnit: 0)
+        }
+        #expect(throws: HibikiTokenSamplingError.invalidRandomValue(1.1)) {
+            _ = try sampler.sample(logits: [0], temperature: 1, topK: 1, randomUnit: 1.1)
+        }
+    }
+
     @Test("translation backend streams source tokens through Hibiki, decode, and playback")
     @MainActor
     func translationBackendStreamsThroughHibikiDecodeAndPlayback() async {
