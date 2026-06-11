@@ -28,7 +28,7 @@ struct ContentView: View {
                     mimiEncoder: DeterministicMimiStreamingEncoder(),
                     inferenceSession: DeterministicHibikiInferenceSession(),
                     mimiDecoder: DeterministicMimiStreamingDecoder(),
-                    playbackSink: BufferedPlaybackSink()
+                    playbackSink: AVAudioPlaybackSink()
                 )
             )
         )
@@ -265,7 +265,7 @@ private struct ExperimentInfoPanel: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Text("Real artifact preparation, file audio input, deterministic Hibiki inference, Mimi decode, and buffered playback demo.")
+                Text("Real artifact preparation, file audio input, deterministic Hibiki inference, Mimi decode, and device playback demo.")
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)

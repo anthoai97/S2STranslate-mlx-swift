@@ -23,8 +23,8 @@ struct StreamingMimiDecodeTests {
             sourceAudioFrameIndex: 1
         )
 
-        let firstChunk = try await decoder.decode(firstFrame)
-        let secondChunk = try await decoder.decode(secondFrame)
+        let firstChunk = try #require(try await decoder.decode(firstFrame).first)
+        let secondChunk = try #require(try await decoder.decode(secondFrame).first)
 
         #expect(firstChunk.frameIndex == 0)
         #expect(secondChunk.frameIndex == 1)
@@ -147,7 +147,7 @@ struct StreamingMimiDecodeTests {
             sourceAudioFrameIndex: 0
         )
 
-        let chunk = try await decoder.decode(frame)
+        let chunk = try #require(try await decoder.decode(frame).first)
         let expectedAudio = ReferenceTrace(
             name: expected.name,
             source: expected.source,
@@ -162,5 +162,116 @@ struct StreamingMimiDecodeTests {
         let mismatches = ReferenceTraceComparator.compare(expected: expectedAudio, actual: actualAudio)
 
         #expect(mismatches.isEmpty)
+    }
+
+    @Test("codec playback backend skips empty decode output without placeholder playback")
+    @MainActor
+    func codecPlaybackBackendSkipsEmptyDecodeOutputWithoutPlaceholderPlayback() async {
+        let session = ExperimentSession(
+            backend: MimiCodecPlaybackExperimentBackend(
+                source: FixtureAudioInputSource(sampleRate: 24_000, chunkSampleCount: 1_920, chunkCount: 2),
+                encoder: DeterministicMimiStreamingEncoder(),
+                decoder: EmptyMimiStreamingDecoder(),
+                playbackSink: BufferedPlaybackSink()
+            )
+        )
+
+        await session.prepare()
+        await session.start()
+
+        #expect(session.state == .running)
+        #expect(session.observations.mimiEncodedFrameCount == 2)
+        #expect(session.observations.decodedAudioChunkCount == 0)
+        #expect(session.observations.playbackChunkCount == 0)
+        #expect(session.observations.mimiDecodeStatus == "stopped")
+    }
+
+    @Test("MLX Mimi decoder wrapper maps runtime chunks and empty outputs")
+    func mlxMimiDecoderWrapperMapsRuntimeChunksAndEmptyOutputs() async throws {
+        let engine = DecodeOnlyMimiRuntimeEngine()
+        engine.decodedChunks = [
+            MLXMimiDecodedChunk(samples: Array(repeating: 0.25, count: 960)),
+            MLXMimiDecodedChunk(samples: Array(repeating: -0.25, count: 960)),
+        ]
+        let decoder = MLXMimiStreamingDecoder(runtime: try makeDecodeRuntime(engine: engine))
+        let frame = MimiTokenFrame(
+            frameIndex: 7,
+            timestampMilliseconds: 560,
+            codebookCount: 16,
+            tokens: Array(0..<16),
+            sourceAudioFrameIndex: 3
+        )
+
+        let chunks = try await decoder.decode(frame)
+
+        #expect(chunks.map(\.frameIndex) == [0, 1])
+        #expect(chunks.map(\.sourceTokenFrameIndex) == [7, 7])
+        #expect(chunks.map(\.samples.count) == [960, 960])
+        engine.decodedChunks = []
+        #expect(try await decoder.decode(frame).isEmpty)
+    }
+
+    @Test("MLX Mimi decoder wrapper surfaces runtime failures")
+    func mlxMimiDecoderWrapperSurfacesRuntimeFailures() async throws {
+        let engine = DecodeOnlyMimiRuntimeEngine()
+        engine.decodeError = MimiRuntimeError.loadFailed("decode graph unavailable")
+        let decoder = MLXMimiStreamingDecoder(runtime: try makeDecodeRuntime(engine: engine))
+        let frame = MimiTokenFrame(
+            frameIndex: 0,
+            timestampMilliseconds: 0,
+            codebookCount: 16,
+            tokens: Array(0..<16),
+            sourceAudioFrameIndex: 0
+        )
+
+        await #expect(throws: MimiDecodeError.unavailable("Mimi runtime load failed: decode graph unavailable")) {
+            _ = try await decoder.decode(frame)
+        }
+    }
+}
+
+private struct EmptyMimiStreamingDecoder: MimiStreamingDecoder {
+    func description() async -> MimiDecoderDescription {
+        MimiDecoderDescription()
+    }
+
+    func decode(_ frame: MimiTokenFrame) async throws -> [DecodedAudioChunk] {
+        []
+    }
+
+    func reset() {}
+}
+
+private func makeDecodeRuntime(engine: MLXMimiRuntimeEngine) throws -> MLXMimiRuntime {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let weightsURL = directory.appendingPathComponent("mimi.safetensors")
+    try Data("fake".utf8).write(to: weightsURL)
+    return MLXMimiRuntime(
+        artifact: PreparedModelArtifact(
+            role: "mimiWeights",
+            fileName: "mimi.safetensors",
+            location: weightsURL.path,
+            source: .prepared
+        ),
+        engine: engine
+    )
+}
+
+private final class DecodeOnlyMimiRuntimeEngine: MLXMimiRuntimeEngine {
+    var decodedChunks: [MLXMimiDecodedChunk] = []
+    var decodeError: Error?
+
+    func resetEncodeState() {}
+    func resetDecodeState() {}
+    func warmup(request: MLXMimiWarmupRequest) throws {}
+    func encode(_ input: MLXMimiPCMInput) throws -> [MLXMimiEncodedFrame] { [] }
+
+    func decode(_ input: MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] {
+        if let decodeError {
+            throw decodeError
+        }
+        return decodedChunks
     }
 }

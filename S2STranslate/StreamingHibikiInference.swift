@@ -387,10 +387,11 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
                     events.append(.hibikiInference(.text(step.text)))
                     events.append(.hibikiInference(.generatedAudio(step.generatedAudioTokens)))
 
-                    let decoded = try await decoder.decode(step.generatedAudioTokens)
-                    events.append(.mimiDecode(.chunk(decoded)))
-                    try await playbackSink.receive(decoded)
-                    events.append(.playback(.chunk(decoded)))
+                    for decoded in try await decoder.decode(step.generatedAudioTokens) {
+                        events.append(.mimiDecode(.chunk(decoded)))
+                        try await playbackSink.receive(decoded)
+                        events.append(.playback(.chunk(decoded)))
+                    }
                 }
             }
 

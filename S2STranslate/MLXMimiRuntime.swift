@@ -89,11 +89,30 @@ public struct MLXMimiEncodedFrame: Equatable, Sendable {
     }
 }
 
+public struct MLXMimiTokenInput: Equatable, Sendable {
+    public var tokens: [Int]
+    public var codebookCount: Int
+
+    nonisolated public init(tokens: [Int], codebookCount: Int) {
+        self.tokens = tokens
+        self.codebookCount = codebookCount
+    }
+}
+
+public struct MLXMimiDecodedChunk: Equatable, Sendable {
+    public var samples: [Float]
+
+    nonisolated public init(samples: [Float]) {
+        self.samples = samples
+    }
+}
+
 public protocol MLXMimiRuntimeEngine: AnyObject {
     func resetEncodeState()
     func resetDecodeState()
     func warmup(request: MLXMimiWarmupRequest) throws
     func encode(_ input: MLXMimiPCMInput) throws -> [MLXMimiEncodedFrame]
+    func decode(_ input: MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk]
 }
 
 public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
@@ -101,6 +120,7 @@ public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
     private let inputBuilder: (MLXMimiPCMInput) throws -> MLXMimiStreamArray
     private let encodeGraphStep: (MLXMimiStreamArray) throws -> MLXMimiStreamArray
     private let tokenExtractor: (MLXMimiStreamArray) throws -> [MLXMimiEncodedFrame]
+    private let decodeGraphStep: (MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk]
 
     public init(model: MLXMimiModel = MLXMimiModel()) {
         self.model = model
@@ -118,18 +138,23 @@ public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
                 codebookCount: model.configuration.quantizerCodebookCount
             ).frames(from: stream)
         }
+        self.decodeGraphStep = { _ in
+            throw MimiRuntimeError.loadFailed("Mimi decode graph not implemented")
+        }
     }
 
     init(
         model: MLXMimiModel = MLXMimiModel(),
         inputBuilder: @escaping (MLXMimiPCMInput) throws -> MLXMimiStreamArray,
         encodeGraphStep: @escaping (MLXMimiStreamArray) throws -> MLXMimiStreamArray,
-        tokenExtractor: @escaping (MLXMimiStreamArray) throws -> [MLXMimiEncodedFrame]
+        tokenExtractor: @escaping (MLXMimiStreamArray) throws -> [MLXMimiEncodedFrame],
+        decodeGraphStep: @escaping (MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] = { _ in [] }
     ) {
         self.model = model
         self.inputBuilder = inputBuilder
         self.encodeGraphStep = encodeGraphStep
         self.tokenExtractor = tokenExtractor
+        self.decodeGraphStep = decodeGraphStep
     }
 
     public func resetEncodeState() {
@@ -149,6 +174,10 @@ public final class MLXMimiDefaultRuntimeEngine: MLXMimiRuntimeEngine {
         let stream = try inputBuilder(input)
         let codes = try encodeGraphStep(stream)
         return try tokenExtractor(codes)
+    }
+
+    public func decode(_ input: MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] {
+        try decodeGraphStep(input)
     }
 }
 
@@ -266,6 +295,17 @@ public final class MLXMimiRuntime: @unchecked Sendable {
         try validateMetadata()
         do {
             return try engine.encode(input)
+        } catch let error as MimiRuntimeError {
+            throw error
+        } catch {
+            throw MimiRuntimeError.loadFailed(String(describing: error))
+        }
+    }
+
+    public func decode(_ input: MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] {
+        try validateMetadata()
+        do {
+            return try engine.decode(input)
         } catch let error as MimiRuntimeError {
             throw error
         } catch {

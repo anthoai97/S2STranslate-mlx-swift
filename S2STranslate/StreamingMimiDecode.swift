@@ -134,7 +134,7 @@ public enum PlaybackSinkError: Error, Equatable, Sendable {
 
 public protocol MimiStreamingDecoder: Sendable {
     func description() async -> MimiDecoderDescription
-    func decode(_ frame: MimiTokenFrame) async throws -> DecodedAudioChunk
+    func decode(_ frame: MimiTokenFrame) async throws -> [DecodedAudioChunk]
     func reset()
 }
 
@@ -157,7 +157,7 @@ public final class DeterministicMimiStreamingDecoder: MimiStreamingDecoder, @unc
         decoderDescription
     }
 
-    public func decode(_ frame: MimiTokenFrame) async throws -> DecodedAudioChunk {
+    public func decode(_ frame: MimiTokenFrame) async throws -> [DecodedAudioChunk] {
         guard frame.codebookCount == decoderDescription.codebookCount else {
             throw MimiDecodeError.unsupportedCodebookCount(frame.codebookCount)
         }
@@ -176,13 +176,14 @@ public final class DeterministicMimiStreamingDecoder: MimiStreamingDecoder, @unc
                 return (phase * 2 - 1) * tokenScale
             }
             state.nextFrameIndex += 1
-            return DecodedAudioChunk(
+            let chunk = DecodedAudioChunk(
                 frameIndex: outputFrameIndex,
                 timestampMilliseconds: Double(outputFrameIndex) * decoderDescription.frameDurationMilliseconds,
                 sampleRate: decoderDescription.sampleRate,
                 samples: samples,
                 sourceTokenFrameIndex: frame.frameIndex
             )
+            return [chunk]
         }
     }
 
@@ -194,6 +195,76 @@ public final class DeterministicMimiStreamingDecoder: MimiStreamingDecoder, @unc
 }
 
 private struct DeterministicMimiStreamingDecoderState: Sendable {
+    var nextFrameIndex = 0
+}
+
+public final class MLXMimiStreamingDecoder: MimiStreamingDecoder, @unchecked Sendable {
+    private let runtime: MLXMimiRuntime
+    private let decoderDescription: MimiDecoderDescription
+    private let state = Mutex(MLXMimiStreamingDecoderState())
+
+    public init(runtime: MLXMimiRuntime) {
+        self.runtime = runtime
+        self.decoderDescription = MimiDecoderDescription(
+            sampleRate: runtime.configuration.sampleRate,
+            samplesPerFrame: runtime.configuration.samplesPerFrame,
+            codebookCount: runtime.configuration.codebookCount,
+            frameRate: runtime.configuration.frameRate
+        )
+    }
+
+    public func description() async -> MimiDecoderDescription {
+        decoderDescription
+    }
+
+    public func decode(_ frame: MimiTokenFrame) async throws -> [DecodedAudioChunk] {
+        guard frame.codebookCount == decoderDescription.codebookCount else {
+            throw MimiDecodeError.unsupportedCodebookCount(frame.codebookCount)
+        }
+
+        guard frame.tokens.count == decoderDescription.codebookCount else {
+            throw MimiDecodeError.malformedTokenFrame(
+                "expected \(decoderDescription.codebookCount) tokens, got \(frame.tokens.count)"
+            )
+        }
+
+        let decodedChunks: [MLXMimiDecodedChunk]
+        do {
+            decodedChunks = try runtime.decode(
+                MLXMimiTokenInput(tokens: frame.tokens, codebookCount: frame.codebookCount)
+            )
+        } catch let error as MimiRuntimeError {
+            throw MimiDecodeError.unavailable(error.userVisibleMessage)
+        } catch {
+            throw MimiDecodeError.unavailable(String(describing: error))
+        }
+
+        guard !decodedChunks.isEmpty else { return [] }
+
+        return state.withLock { state in
+            decodedChunks.map { decodedChunk in
+                let frameIndex = state.nextFrameIndex
+                state.nextFrameIndex += 1
+                return DecodedAudioChunk(
+                    frameIndex: frameIndex,
+                    timestampMilliseconds: Double(frameIndex) * decoderDescription.frameDurationMilliseconds,
+                    sampleRate: decoderDescription.sampleRate,
+                    samples: decodedChunk.samples,
+                    sourceTokenFrameIndex: frame.frameIndex
+                )
+            }
+        }
+    }
+
+    public func reset() {
+        runtime.resetDecodeState()
+        state.withLock { state in
+            state.nextFrameIndex = 0
+        }
+    }
+}
+
+private struct MLXMimiStreamingDecoderState: Sendable {
     var nextFrameIndex = 0
 }
 
@@ -213,7 +284,7 @@ public struct FailingMimiStreamingDecoder: MimiStreamingDecoder, Sendable {
         decoderDescription
     }
 
-    public func decode(_ frame: MimiTokenFrame) async throws -> DecodedAudioChunk {
+    public func decode(_ frame: MimiTokenFrame) async throws -> [DecodedAudioChunk] {
         throw error
     }
 
@@ -332,10 +403,11 @@ public struct MimiCodecPlaybackExperimentBackend: ExperimentBackend, Sendable {
                 events.append(.audioInput(.chunk(chunk)))
                 for frame in try await encoder.encode(chunk) {
                     events.append(.mimiEncode(.frame(frame)))
-                    let decoded = try await decoder.decode(frame)
-                    events.append(.mimiDecode(.chunk(decoded)))
-                    try await playbackSink.receive(decoded)
-                    events.append(.playback(.chunk(decoded)))
+                    for decoded in try await decoder.decode(frame) {
+                        events.append(.mimiDecode(.chunk(decoded)))
+                        try await playbackSink.receive(decoded)
+                        events.append(.playback(.chunk(decoded)))
+                    }
                 }
             }
 

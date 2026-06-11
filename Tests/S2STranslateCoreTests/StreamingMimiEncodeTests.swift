@@ -307,4 +307,8 @@ private final class FakeStreamingMimiRuntimeEngine: MLXMimiRuntimeEngine {
         guard !encodedFramesByCall.isEmpty else { return [] }
         return encodedFramesByCall.removeFirst()
     }
+
+    func decode(_ input: MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] {
+        []
+    }
 }

@@ -331,6 +331,10 @@ private final class FakeMimiRuntimeEngine: MLXMimiRuntimeEngine {
     func encode(_ input: MLXMimiPCMInput) throws -> [MLXMimiEncodedFrame] {
         []
     }
+
+    func decode(_ input: MLXMimiTokenInput) throws -> [MLXMimiDecodedChunk] {
+        []
+    }
 }
 
 private enum ExampleMimiEngineError: Error, CustomStringConvertible {

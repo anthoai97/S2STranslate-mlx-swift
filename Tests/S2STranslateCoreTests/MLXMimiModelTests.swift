@@ -101,7 +101,7 @@ struct MLXMimiModelTests {
         )
 
         let encodedFrame = try #require(try await encoder.encode(chunk).first)
-        let decodedChunk = try await decoder.decode(encodedFrame)
+        let decodedChunk = try #require(try await decoder.decode(encodedFrame).first)
 
         #expect(encodedFrame.tokens.count == 16)
         #expect(decodedChunk.sampleRate == 24_000)

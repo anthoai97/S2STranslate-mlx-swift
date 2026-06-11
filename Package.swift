@@ -34,6 +34,7 @@ let package = Package(
                 "S2STranslateApp.swift",
             ],
             sources: [
+                "AVAudioPlaybackSink.swift",
                 "ExperimentSession.swift",
                 "FileAudioInput.swift",
                 "MLXMimiConv.swift",

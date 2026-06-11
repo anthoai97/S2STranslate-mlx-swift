@@ -1,6 +1,6 @@
 # Run Real File-Based French-to-English Smoke Test
 
-Status: ready-for-agent
+Status: in-progress
 
 ## Parent
 
@@ -20,13 +20,15 @@ This is the first end-to-end real translation smoke test.
 - [ ] English voice output is routed to playback or a clearly inspectable sink.
 - [ ] Metrics distinguish file decode, Mimi encode, Hibiki step/sampling, Mimi decode, and playback delivery.
 - [ ] Failure states from artifact download, model load, encode, inference, decode, and playback remain user-visible.
-- [ ] A manual smoke-test document records device/simulator expectations, first-run model cache cost, and known limitations.
+- [x] A manual smoke-test document records device/simulator expectations, first-run model cache cost, and known limitations.
 - [ ] Automated tests exercise the orchestration path with fake real-component seams where full 3B inference is impractical.
 
 ## Notes
 
 - Prefer `French Europarl short 1` as the first smoke input.
 - This issue is not done if it only emits deterministic placeholder text or buffered silent audio.
+- Current checkpoint unblocks playback with `AVAudioPlaybackSink`, adds the real decode boundary for zero/one/many decoded chunks, and records the manual smoke checklist in `docs/real-file-french-english-smoke-test.md`.
+- Remaining blockers are real Mimi decode graph execution and real Hibiki model load/step/token sampling before this can be marked done.
 
 ## Blocked by
 
