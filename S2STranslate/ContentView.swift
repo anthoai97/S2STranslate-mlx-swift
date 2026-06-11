@@ -16,20 +16,21 @@ struct ContentView: View {
 
     init() {
         let inputSelection = DemoAudioInputSelection(fixtures: FileAudioFixtureCatalog.frenchFixtures)
+        let artifactPreparer = ModelArtifactPreparer(
+            manifest: .hibikiQ4Default,
+            provider: HuggingFaceModelArtifactProvider()
+        )
+        let generationConfiguration = HibikiGenerationConfiguration(
+            tailSilenceFrameCount: 8,
+            postInputPaddingStopFrameCount: 3
+        )
         _inputSelection = StateObject(wrappedValue: inputSelection)
         _session = StateObject(
             wrappedValue: ExperimentSession(
-                backend: RealFileHibikiTranslationExperimentBackend(
-                    artifactPreparer: ModelArtifactPreparer(
-                        manifest: .hibikiQ4Default,
-                        provider: HuggingFaceModelArtifactProvider()
-                    ),
+                backend: Self.defaultBackend(
+                    artifactPreparer: artifactPreparer,
                     audioSource: inputSelection.source,
-                    playbackSink: Self.defaultPlaybackSink(),
-                    generationConfiguration: HibikiGenerationConfiguration(
-                        tailSilenceFrameCount: 8,
-                        postInputPaddingStopFrameCount: 3
-                    )
+                    generationConfiguration: generationConfiguration
                 )
             )
         )
@@ -81,11 +82,28 @@ struct ContentView: View {
         }
     }
 
-    private static func defaultPlaybackSink() -> any PlaybackSink {
+    private static func defaultBackend(
+        artifactPreparer: ModelArtifactPreparer,
+        audioSource: any AudioInputSource,
+        generationConfiguration: HibikiGenerationConfiguration
+    ) -> any ExperimentBackend {
         #if targetEnvironment(simulator)
-        BufferedPlaybackSink()
+        HibikiTranslationExperimentBackend(
+            artifactPreparer: artifactPreparer,
+            audioSource: audioSource,
+            mimiEncoder: DeterministicMimiStreamingEncoder(),
+            inferenceSession: DeterministicHibikiInferenceSession(),
+            mimiDecoder: DeterministicMimiStreamingDecoder(),
+            playbackSink: AVAudioPlaybackSink(),
+            generationConfiguration: generationConfiguration
+        )
         #else
-        AVAudioPlaybackSink()
+        RealFileHibikiTranslationExperimentBackend(
+            artifactPreparer: artifactPreparer,
+            audioSource: audioSource,
+            playbackSink: AVAudioPlaybackSink(),
+            generationConfiguration: generationConfiguration
+        )
         #endif
     }
 

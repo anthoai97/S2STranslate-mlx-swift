@@ -42,6 +42,15 @@ public enum AudioInputEvent: Equatable, Sendable {
             "streamFailed"
         }
     }
+
+    var isStreamBoundary: Bool {
+        switch self {
+        case .streamStarted, .streamStopped, .streamFailed:
+            true
+        case .chunk:
+            false
+        }
+    }
 }
 
 public struct AudioInputDescription: Equatable, Sendable {

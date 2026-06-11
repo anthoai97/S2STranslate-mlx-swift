@@ -1,5 +1,8 @@
 import Foundation
+import OSLog
 import Synchronization
+
+private let hibikiBackendLogger = Logger(subsystem: "andyq.S2STranslate", category: "HibikiBackend")
 
 public struct HibikiGenerationConfiguration: Equatable, Sendable {
     public var temperature: Double
@@ -244,6 +247,15 @@ public enum HibikiInferenceEvent: Equatable, Sendable {
             "streamFailed"
         }
     }
+
+    var isStreamBoundary: Bool {
+        switch self {
+        case .streamStarted, .streamStopped, .streamFailed:
+            true
+        case .sourceTokens, .step, .text, .generatedAudio:
+            false
+        }
+    }
 }
 
 public enum HibikiInferenceError: Error, Equatable, Sendable {
@@ -424,12 +436,14 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
     }
 
     public func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+        hibikiBackendLogger.info("deterministic prepare artifact begin")
         let result = await artifactPreparer.prepare { artifactProgress in
             await MainActor.run {
                 send(.artifactPreparationProgress(artifactProgress))
                 send(.preparationProgress(artifactProgress.overallFractionCompleted))
             }
         }
+        hibikiBackendLogger.info("deterministic prepare artifact end files=\(result.artifacts?.files.count ?? 0, privacy: .public) failure=\(result.failure == nil ? "none" : "present", privacy: .public)")
 
         for event in await terminalPrepareEvents(from: result) {
             send(event)
@@ -451,29 +465,35 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
 
     private func terminalPrepareEvents(from result: ModelArtifactPreparationResult) async -> [ExperimentEvent] {
         if let failure = result.failure {
+            hibikiBackendLogger.error("deterministic prepare artifact failed: \(failure.userVisibleMessage, privacy: .public)")
             return [.failure(failure.userVisibleMessage)]
         }
 
         guard let artifacts = result.artifacts else {
+            hibikiBackendLogger.error("deterministic prepare missing prepared artifacts")
             return [.failure(HibikiInferenceError.invalidArtifacts("missing prepared artifacts").userVisibleMessage)]
         }
 
         do {
+            hibikiBackendLogger.info("deterministic hibiki initialize begin")
             let description = try await inferenceSession.initialize(
                 artifacts: artifacts,
                 configuration: generationConfiguration
             )
+            hibikiBackendLogger.info("deterministic hibiki initialize end revision=\(description.modelRevision, privacy: .public)")
             return [
                 .hibikiInference(.streamStarted(description)),
                 .ready,
             ]
         } catch let error as HibikiInferenceError {
+            hibikiBackendLogger.error("deterministic hibiki initialize failed: \(error.userVisibleMessage, privacy: .public)")
             return [
                 .hibikiInference(.streamFailed(error.userVisibleMessage)),
                 .failure(error.userVisibleMessage),
             ]
         } catch {
             let message = HibikiInferenceError.unavailable(String(describing: error)).userVisibleMessage
+            hibikiBackendLogger.error("deterministic hibiki initialize failed: \(message, privacy: .public)")
             return [
                 .hibikiInference(.streamFailed(message)),
                 .failure(message),
@@ -482,6 +502,7 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
     }
 
     public func runEvents() async -> [ExperimentEvent] {
+        hibikiBackendLogger.info("deterministic run begin")
         encoder.reset()
         decoder.reset()
         playbackSink.reset()
@@ -529,23 +550,30 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
             events.append(.hibikiInference(.streamStopped))
             events.append(.mimiDecode(.streamStopped))
             events.append(.playback(.streamStopped))
+            hibikiBackendLogger.info("deterministic run end events=\(events.count, privacy: .public)")
         } catch let error as AudioInputError {
+            hibikiBackendLogger.error("deterministic audio input failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.audioInput(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch let error as MimiEncodeError {
+            hibikiBackendLogger.error("deterministic mimi encode failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.mimiEncode(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch let error as HibikiInferenceError {
+            hibikiBackendLogger.error("deterministic hibiki step failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.hibikiInference(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch let error as MimiDecodeError {
+            hibikiBackendLogger.error("deterministic mimi decode failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.mimiDecode(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch let error as PlaybackSinkError {
+            hibikiBackendLogger.error("deterministic playback failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.playback(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch {
             let message = HibikiInferenceError.unavailable(String(describing: error)).userVisibleMessage
+            hibikiBackendLogger.error("deterministic run failed: \(message, privacy: .public)")
             events.append(.hibikiInference(.streamFailed(message)))
             events.append(.failure(message))
         }
@@ -599,12 +627,14 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
     }
 
     public func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+        hibikiBackendLogger.info("real-file prepare artifact begin")
         let result = await artifactPreparer.prepare { artifactProgress in
             await MainActor.run {
                 send(.artifactPreparationProgress(artifactProgress))
                 send(.preparationProgress(artifactProgress.overallFractionCompleted))
             }
         }
+        hibikiBackendLogger.info("real-file prepare artifact end files=\(result.artifacts?.files.count ?? 0, privacy: .public) failure=\(result.failure == nil ? "none" : "present", privacy: .public)")
 
         for event in await terminalPrepareEvents(from: result) {
             send(event)
@@ -626,21 +656,27 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
 
     private func terminalPrepareEvents(from result: ModelArtifactPreparationResult) async -> [ExperimentEvent] {
         if let failure = result.failure {
+            hibikiBackendLogger.error("real-file prepare artifact failed: \(failure.userVisibleMessage, privacy: .public)")
             return [.failure(failure.userVisibleMessage)]
         }
 
         guard let artifacts = result.artifacts else {
+            hibikiBackendLogger.error("real-file prepare missing prepared artifacts")
             return [.failure(HibikiInferenceError.invalidArtifacts("missing prepared artifacts").userVisibleMessage)]
         }
 
         do {
+            hibikiBackendLogger.info("real-file mimi runtime load begin")
             let runtime = try mimiRuntimeLoader(artifacts)
+            hibikiBackendLogger.info("real-file mimi runtime load end")
             let encoder = MLXMimiStreamingEncoder(runtime: runtime)
             let decoder = MLXMimiStreamingDecoder(runtime: runtime)
+            hibikiBackendLogger.info("real-file hibiki initialize begin")
             let description = try await inferenceSession.initialize(
                 artifacts: artifacts,
                 configuration: generationConfiguration
             )
+            hibikiBackendLogger.info("real-file hibiki initialize end revision=\(description.modelRevision, privacy: .public)")
             components.store(
                 RealFileHibikiTranslationComponents(
                     encoder: encoder,
@@ -652,23 +688,27 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
                 .ready,
             ]
         } catch let error as MimiRuntimeError {
+            hibikiBackendLogger.error("real-file mimi runtime failed: \(error.userVisibleMessage, privacy: .public)")
             return [
                 .mimiEncode(.streamFailed(error.userVisibleMessage)),
                 .mimiDecode(.streamFailed(error.userVisibleMessage)),
                 .failure(error.userVisibleMessage),
             ]
         } catch let error as MimiEncodeError {
+            hibikiBackendLogger.error("real-file mimi encode prepare failed: \(error.userVisibleMessage, privacy: .public)")
             return [
                 .mimiEncode(.streamFailed(error.userVisibleMessage)),
                 .failure(error.userVisibleMessage),
             ]
         } catch let error as HibikiInferenceError {
+            hibikiBackendLogger.error("real-file hibiki initialize failed: \(error.userVisibleMessage, privacy: .public)")
             return [
                 .hibikiInference(.streamFailed(error.userVisibleMessage)),
                 .failure(error.userVisibleMessage),
             ]
         } catch {
             let message = HibikiInferenceError.unavailable(String(describing: error)).userVisibleMessage
+            hibikiBackendLogger.error("real-file prepare failed: \(message, privacy: .public)")
             return [
                 .hibikiInference(.streamFailed(message)),
                 .failure(message),
@@ -678,9 +718,11 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
 
     public func runEvents() async -> [ExperimentEvent] {
         guard let prepared = components.load() else {
+            hibikiBackendLogger.error("real-file run missing prepared components")
             return [.failure(HibikiInferenceError.notInitialized.userVisibleMessage)]
         }
 
+        hibikiBackendLogger.info("real-file run begin")
         let encoder = prepared.encoder
         let decoder = prepared.decoder
         encoder.reset()
@@ -730,23 +772,30 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
             events.append(.hibikiInference(.streamStopped))
             events.append(.mimiDecode(.streamStopped))
             events.append(.playback(.streamStopped))
+            hibikiBackendLogger.info("real-file run end events=\(events.count, privacy: .public)")
         } catch let error as AudioInputError {
+            hibikiBackendLogger.error("real-file audio input failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.audioInput(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch let error as MimiEncodeError {
+            hibikiBackendLogger.error("real-file mimi encode failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.mimiEncode(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch let error as HibikiInferenceError {
+            hibikiBackendLogger.error("real-file hibiki step failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.hibikiInference(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch let error as MimiDecodeError {
+            hibikiBackendLogger.error("real-file mimi decode failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.mimiDecode(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch let error as PlaybackSinkError {
+            hibikiBackendLogger.error("real-file playback failed: \(error.userVisibleMessage, privacy: .public)")
             events.append(.playback(.streamFailed(error.userVisibleMessage)))
             events.append(.failure(error.userVisibleMessage))
         } catch {
             let message = HibikiInferenceError.unavailable(String(describing: error)).userVisibleMessage
+            hibikiBackendLogger.error("real-file run failed: \(message, privacy: .public)")
             events.append(.hibikiInference(.streamFailed(message)))
             events.append(.failure(message))
         }

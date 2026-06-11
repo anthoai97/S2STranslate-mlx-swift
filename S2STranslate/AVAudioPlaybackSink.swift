@@ -87,6 +87,10 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
 
     func start(sampleRate: Int) throws {
         stop()
+        #if os(iOS) || os(tvOS)
+        try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+        try AVAudioSession.sharedInstance().setActive(true)
+        #endif
 
         guard let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,

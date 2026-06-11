@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import OSLog
 
 @MainActor
 public final class ExperimentSession: ObservableObject {
@@ -7,6 +8,7 @@ public final class ExperimentSession: ObservableObject {
     @Published public private(set) var observations: ExperimentObservations
 
     private let backend: ExperimentBackend
+    private let logger = Logger(subsystem: "andyq.S2STranslate", category: "ExperimentSession")
 
     public init(
         backend: ExperimentBackend,
@@ -19,41 +21,58 @@ public final class ExperimentSession: ObservableObject {
     }
 
     public func prepare() async {
+        logger.info("prepare begin state=\(String(describing: self.state), privacy: .public)")
         state = .preparing
         await backend.prepareEvents { [weak self] event in
             self?.apply(event)
         }
+        logger.info("prepare end state=\(String(describing: self.state), privacy: .public) events=\(self.observations.eventCount, privacy: .public)")
     }
 
     public func start() async {
-        guard state == .ready else { return }
+        guard state == .ready else {
+            logger.warning("start ignored state=\(String(describing: self.state), privacy: .public)")
+            return
+        }
 
+        logger.info("start begin")
         state = .running
         for event in await backend.runEvents() {
             apply(event)
         }
+        logger.info("start end state=\(String(describing: self.state), privacy: .public) events=\(self.observations.eventCount, privacy: .public)")
     }
 
     public func stop() {
-        guard state == .running else { return }
+        guard state == .running else {
+            logger.warning("stop ignored state=\(String(describing: self.state), privacy: .public)")
+            return
+        }
 
+        logger.info("stop")
         backend.stop()
         apply(.stopped)
         state = .stopped
     }
 
     public func newSession() {
-        guard state.isTerminal else { return }
+        guard state.isTerminal else {
+            logger.warning("new session ignored state=\(String(describing: self.state), privacy: .public)")
+            return
+        }
 
+        logger.info("new session from state=\(String(describing: self.state), privacy: .public)")
         state = .unloaded
         observations = ExperimentObservations()
     }
 
     public func triggerFailureDemo() {
+        logger.info("trigger failure demo")
         apply(.failure("Fake backend failure"))
     }
 
     private func apply(_ event: ExperimentEvent) {
+        let stateBefore = state
         observations.record(event)
 
         switch event {
@@ -79,6 +98,9 @@ public final class ExperimentSession: ObservableObject {
             break
         case let .failure(message):
             state = .failed(message)
+        }
+        if event.shouldLog {
+            logger.info("event=\(event.name, privacy: .public) state=\(String(describing: stateBefore), privacy: .public)->\(String(describing: self.state), privacy: .public) count=\(self.observations.eventCount, privacy: .public)")
         }
     }
 }
@@ -411,6 +433,25 @@ public enum ExperimentEvent: Equatable {
             "stopped"
         case .failure:
             "failed"
+        }
+    }
+
+    var shouldLog: Bool {
+        switch self {
+        case .ready, .stopped, .failure:
+            true
+        case let .audioInput(event):
+            event.isStreamBoundary
+        case let .mimiEncode(event):
+            event.isStreamBoundary
+        case let .mimiDecode(event):
+            event.isStreamBoundary
+        case let .playback(event):
+            event.isStreamBoundary
+        case let .hibikiInference(event):
+            event.isStreamBoundary
+        case .preparationProgress, .artifactPreparationProgress, .observation:
+            false
         }
     }
 }

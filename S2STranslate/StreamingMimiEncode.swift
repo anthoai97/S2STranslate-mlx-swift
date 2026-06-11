@@ -75,6 +75,15 @@ public enum MimiEncodeEvent: Equatable, Sendable {
             "streamFailed"
         }
     }
+
+    var isStreamBoundary: Bool {
+        switch self {
+        case .streamStarted, .streamStopped, .streamFailed:
+            true
+        case .frame:
+            false
+        }
+    }
 }
 
 public enum MimiEncodeError: Error, Equatable, Sendable {

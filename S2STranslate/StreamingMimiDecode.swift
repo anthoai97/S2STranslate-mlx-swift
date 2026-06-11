@@ -1,6 +1,8 @@
 import Foundation
 import Synchronization
 
+private let twoPi = Float.pi * 2
+
 public struct MimiDecoderDescription: Equatable, Sendable {
     public var sampleRate: Int
     public var samplesPerFrame: Int
@@ -79,6 +81,15 @@ public enum MimiDecodeEvent: Equatable, Sendable {
             "decodeStreamFailed"
         }
     }
+
+    var isStreamBoundary: Bool {
+        switch self {
+        case .streamStarted, .streamStopped, .streamFailed:
+            true
+        case .chunk:
+            false
+        }
+    }
 }
 
 public enum PlaybackEvent: Equatable, Sendable {
@@ -97,6 +108,15 @@ public enum PlaybackEvent: Equatable, Sendable {
             "streamStopped"
         case .streamFailed:
             "streamFailed"
+        }
+    }
+
+    var isStreamBoundary: Bool {
+        switch self {
+        case .streamStarted, .streamStopped, .streamFailed:
+            true
+        case .chunk:
+            false
         }
     }
 }
@@ -170,12 +190,19 @@ public final class DeterministicMimiStreamingDecoder: MimiStreamingDecoder, @unc
 
         return state.withLock { state in
             let outputFrameIndex = state.nextFrameIndex
-            let tokenScale = Float((frame.tokens.first ?? 0) % 32) / 31
+            let tokenOffset = Float((frame.tokens.first ?? 0) % 12)
+            let frequency = Float(220) * pow(Float(2), tokenOffset / 12)
+            let amplitude = Float(0.08)
             let samples = (0..<decoderDescription.samplesPerFrame).map { sampleIndex in
-                let phase = Float((sampleIndex + outputFrameIndex) % 16) / 15
-                return (phase * 2 - 1) * tokenScale
+                let absoluteSampleIndex = state.nextSampleIndex + sampleIndex
+                let phase = twoPi * frequency * Float(absoluteSampleIndex) / Float(decoderDescription.sampleRate)
+                let fadeIn = min(1, Float(sampleIndex) / 128)
+                let fadeOut = min(1, Float(decoderDescription.samplesPerFrame - sampleIndex - 1) / 128)
+                let envelope = min(fadeIn, fadeOut)
+                return sin(phase) * amplitude * envelope
             }
             state.nextFrameIndex += 1
+            state.nextSampleIndex += decoderDescription.samplesPerFrame
             let chunk = DecodedAudioChunk(
                 frameIndex: outputFrameIndex,
                 timestampMilliseconds: Double(outputFrameIndex) * decoderDescription.frameDurationMilliseconds,
@@ -190,12 +217,14 @@ public final class DeterministicMimiStreamingDecoder: MimiStreamingDecoder, @unc
     public func reset() {
         state.withLock { state in
             state.nextFrameIndex = 0
+            state.nextSampleIndex = 0
         }
     }
 }
 
 private struct DeterministicMimiStreamingDecoderState: Sendable {
     var nextFrameIndex = 0
+    var nextSampleIndex = 0
 }
 
 public final class MLXMimiStreamingDecoder: MimiStreamingDecoder, @unchecked Sendable {
