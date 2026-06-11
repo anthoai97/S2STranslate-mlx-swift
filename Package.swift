@@ -37,6 +37,7 @@ let package = Package(
                 "AVAudioPlaybackSink.swift",
                 "ExperimentSession.swift",
                 "FileAudioInput.swift",
+                "HibikiTextTokenDecoder.swift",
                 "MLXHibikiGraphParameters.swift",
                 "MLXHibikiModel.swift",
                 "MLXHibikiRuntime.swift",

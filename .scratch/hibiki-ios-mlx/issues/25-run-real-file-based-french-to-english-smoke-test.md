@@ -27,8 +27,8 @@ This is the first end-to-end real translation smoke test.
 
 - Prefer `French Europarl short 1` as the first smoke input.
 - This issue is not done if it only emits deterministic placeholder text or buffered silent audio.
-- Current checkpoints unblock playback with `AVAudioPlaybackSink`, add the real decode boundary for zero/one/many decoded chunks, wire the executable MLX Mimi decode graph, add the MLX Hibiki session/load boundary, add grouped-query/`rope_concat` transformer support plus Hibiki LM/Depformer topology parsing, graph-shell construction, q4 graph-parameter assignment, delayed runtime sequence state, main text sampling, and sequential Depformer audio-token sampling, add a real-file backend that constructs MLX Mimi encode/decode components after artifact preparation, add a tokenizer-decoding seam plus opt-in tail-silence flushing with blank/pad stop detection for file input, and record the manual smoke checklist in `docs/real-file-french-english-smoke-test.md`.
-- Remaining blocker is proving the real full-artifact file smoke, including real tokenizer text pieces and inspectable generated audio quality, before this can be marked done.
+- Current checkpoints unblock playback with `AVAudioPlaybackSink`, add the real decode boundary for zero/one/many decoded chunks, wire the executable MLX Mimi decode graph, add the MLX Hibiki session/load boundary, add grouped-query/`rope_concat` transformer support plus Hibiki LM/Depformer topology parsing, graph-shell construction, q4 graph-parameter assignment, delayed runtime sequence state, main text sampling, sequential Depformer audio-token sampling, default SentencePiece tokenizer decoding from the prepared artifact, a real-file backend that constructs MLX Mimi encode/decode components after artifact preparation, opt-in tail-silence flushing with blank/pad stop detection for file input, and the manual smoke checklist in `docs/real-file-french-english-smoke-test.md`.
+- Remaining blocker is proving the real full-artifact file smoke, including incrementally visible decoded English text and inspectable generated audio quality, before this can be marked done.
 
 ## Blocked by
 

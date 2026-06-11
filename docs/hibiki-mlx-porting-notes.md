@@ -29,4 +29,5 @@ Issue: `.scratch/hibiki-ios-mlx/issues/22-implement-mlx-hibiki-model-load-and-st
 - `MLXHibikiGraphParameterApplier` maps the converted MLX q4 artifact into 2,015 graph tensors: quantized embedding/linear groups (`weight`, `scales`, `biases`) plus dense norm tensors, including the Hibiki-specific per-slice Depformer output norms.
 - `MLXHibikiLanguageModel.mainStep` now executes the cached main LM path: text/audio embeddings, main transformer, output norm, and text logits.
 - `MLXHibikiDefaultRuntimeEngine.step` keeps Hibiki's delayed sequence state, greedily/top-k samples text logits, executes the sequential Depformer slices, and returns generated audio tokens.
-- Full real-file smoke remains unverified on the 3B q4 artifact; real tokenizer decoding and manual audio/text quality checks are still pending.
+- `SentencePieceHibikiTextTokenDecoder` loads the prepared `tokenizer_spm_48k_multi6_2.model` artifact and decodes text token ids into normalized visible pieces.
+- Full real-file smoke remains unverified on the 3B q4 artifact; manual audio/text quality checks are still pending.

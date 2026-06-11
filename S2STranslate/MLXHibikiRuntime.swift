@@ -243,17 +243,22 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
 public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked Sendable {
     private let runtimeConfiguration: MLXHibikiRuntimeConfiguration
     private let engine: MLXHibikiRuntimeEngine
-    private let textTokenDecoder: any HibikiTextTokenDecoding
+    private let textTokenDecoder: (any HibikiTextTokenDecoding)?
+    private let textTokenDecoderFactory: (URL) throws -> any HibikiTextTokenDecoding
     private let state = Mutex(MLXHibikiInferenceState())
 
     public init(
         runtimeConfiguration: MLXHibikiRuntimeConfiguration = MLXHibikiRuntimeConfiguration(),
         engine: MLXHibikiRuntimeEngine = MLXHibikiDefaultRuntimeEngine(),
-        textTokenDecoder: any HibikiTextTokenDecoding = EmptyHibikiTextTokenDecoder()
+        textTokenDecoder: (any HibikiTextTokenDecoding)? = nil,
+        textTokenDecoderFactory: @escaping (URL) throws -> any HibikiTextTokenDecoding = {
+            try SentencePieceHibikiTextTokenDecoder(modelURL: $0)
+        }
     ) {
         self.runtimeConfiguration = runtimeConfiguration
         self.engine = engine
         self.textTokenDecoder = textTokenDecoder
+        self.textTokenDecoderFactory = textTokenDecoderFactory
     }
 
     public func initialize(
@@ -261,6 +266,7 @@ public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked
         configuration: HibikiGenerationConfiguration
     ) async throws -> HibikiInferenceDescription {
         let request = try loadRequest(from: artifacts)
+        let decoder = try textTokenDecoder ?? textTokenDecoderFactory(request.tokenizerURL)
 
         do {
             try engine.load(request: request)
@@ -274,6 +280,7 @@ public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked
             state.initialized = true
             state.nextFrameIndex = 0
             state.generationConfiguration = configuration
+            state.textTokenDecoder = decoder
         }
 
         return HibikiInferenceDescription(
@@ -293,13 +300,13 @@ public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked
             )
         }
 
-        let (frameIndex, generationConfiguration) = try state.withLock { state in
+        let (frameIndex, generationConfiguration, textTokenDecoder) = try state.withLock { state in
             guard state.initialized else {
                 throw HibikiInferenceError.notInitialized
             }
             let frameIndex = state.nextFrameIndex
             state.nextFrameIndex += 1
-            return (frameIndex, state.generationConfiguration)
+            return (frameIndex, state.generationConfiguration, state.textTokenDecoder)
         }
 
         let output = try engine.step(
@@ -316,7 +323,7 @@ public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked
         let text = HibikiTextOutput(
             frameIndex: frameIndex,
             token: output.textToken,
-            piece: output.textPiece ?? textTokenDecoder.piece(for: output.textToken),
+            piece: output.textPiece ?? textTokenDecoder?.piece(for: output.textToken),
             candidateTokens: output.textCandidateTokens
         )
         let generatedAudio = MimiTokenFrame(
@@ -341,6 +348,7 @@ public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked
             state.initialized = false
             state.nextFrameIndex = 0
             state.generationConfiguration = HibikiGenerationConfiguration()
+            state.textTokenDecoder = nil
         }
     }
 
@@ -374,6 +382,7 @@ private struct MLXHibikiInferenceState: Sendable {
     var initialized = false
     var nextFrameIndex = 0
     var generationConfiguration = HibikiGenerationConfiguration()
+    var textTokenDecoder: (any HibikiTextTokenDecoding)?
 }
 
 private final class MLXHibikiSequenceState {

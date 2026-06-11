@@ -81,6 +81,28 @@ struct MLXHibikiRuntimeTests {
         #expect(!skipped.text.isVisible)
     }
 
+    @Test("MLX Hibiki session decodes text tokens from prepared tokenizer artifact")
+    func mlxHibikiSessionDecodesTextTokensFromPreparedTokenizerArtifact() async throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let engine = RecordingHibikiRuntimeEngine(
+            output: MLXHibikiStepOutput(
+                textToken: 4,
+                textCandidateTokens: [4],
+                audioTokens: Array(700..<716)
+            )
+        )
+        let session = MLXHibikiInferenceSession(engine: engine)
+
+        _ = try await session.initialize(
+            artifacts: artifacts,
+            configuration: HibikiGenerationConfiguration()
+        )
+        let step = try await session.step(sourceAudioTokens: sourceTokenFrame(frameIndex: 0))
+
+        #expect(step.text.piece == " mlx")
+        #expect(step.text.isVisible)
+    }
+
     @Test("MLX Hibiki default engine validates q4 architecture metadata")
     func mlxHibikiDefaultEngineValidatesQ4ArchitectureMetadata() throws {
         let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
@@ -588,7 +610,17 @@ private func preparedHibikiArtifacts(configJSON: String) throws -> PreparedModel
     try configJSON.data(using: .utf8)!.write(to: configURL)
     try Data("fake q4 weights".utf8).write(to: weightsURL)
     try Data("fake mimi weights".utf8).write(to: mimiURL)
-    try Data("fake tokenizer".utf8).write(to: tokenizerURL)
+    try sentencePieceModelData(
+        pieces: [
+            "<blank>",
+            "a",
+            "b",
+            "<pad>",
+            "\u{2581}mlx",
+            "\u{2581}hello",
+        ]
+    )
+    .write(to: tokenizerURL)
 
     return PreparedModelArtifacts(
         manifest: .hibikiQ4Default,
@@ -599,6 +631,36 @@ private func preparedHibikiArtifacts(configJSON: String) throws -> PreparedModel
             PreparedModelArtifact(role: "tokenizer", fileName: "tokenizer_spm_48k_multi6_2.model", location: tokenizerURL.path, source: .prepared),
         ]
     )
+}
+
+private func sentencePieceModelData(pieces: [String]) -> Data {
+    var data = Data()
+    for piece in pieces {
+        let pieceData = Data(piece.utf8)
+        var message = Data()
+        message.append(0x0a)
+        message.append(contentsOf: protobufVarint(pieceData.count))
+        message.append(pieceData)
+
+        data.append(0x0a)
+        data.append(contentsOf: protobufVarint(message.count))
+        data.append(message)
+    }
+    return data
+}
+
+private func protobufVarint(_ value: Int) -> [UInt8] {
+    var value = UInt(value)
+    var bytes: [UInt8] = []
+    repeat {
+        var byte = UInt8(value & 0x7f)
+        value >>= 7
+        if value != 0 {
+            byte |= 0x80
+        }
+        bytes.append(byte)
+    } while value != 0
+    return bytes
 }
 
 private func makeLoadRequest(artifacts: PreparedModelArtifacts) throws -> MLXHibikiLoadRequest {
