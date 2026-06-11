@@ -418,31 +418,41 @@ final class MLXMimiAttention {
             outputDimensions: configuration.modelDimension,
             bias: configuration.attentionBias
         )
-        self.rope = configuration.positionalEmbedding == .rope
-            ? MLXNN.RoPE(
+        switch configuration.positionalEmbedding {
+        case .none:
+            self.rope = nil
+        case .rope:
+            self.rope = MLXNN.RoPE(
                 dimensions: configuration.headDimension,
                 traditional: true,
                 base: Float(configuration.maxPeriod)
             )
-            : nil
+        case .ropeConcat:
+            self.rope = MLXNN.RoPE(
+                dimensions: configuration.headDimension,
+                traditional: false,
+                base: Float(configuration.maxPeriod)
+            )
+        }
     }
 
     func callAsFunction(_ x: MLXArray, mask: MLXArray?, cache: MLXMimiKVCache) -> MLXArray {
-        precondition(configuration.kvRepeat == 1, "Mimi transformer currently expects kvRepeat == 1")
-
         let batch = x.dim(0)
         let time = x.dim(1)
         let hidden = x.dim(2)
-        let qkv = qkvProjection(x).reshaped(
-            batch,
-            time,
-            3,
-            configuration.headCount,
-            configuration.headDimension
-        )
-        var query = qkv[0..., 0..., 0].transposed(0, 2, 1, 3)
-        var key = qkv[0..., 0..., 1].transposed(0, 2, 1, 3)
-        var value = qkv[0..., 0..., 2].transposed(0, 2, 1, 3)
+        let headDimension = configuration.headDimension
+        let queryDimension = configuration.headCount * headDimension
+        let keyValueDimension = keyValueHeadCount * headDimension
+        let qkv = qkvProjection(x)
+        var query = qkv[0..., 0..., 0..<queryDimension]
+            .reshaped(batch, time, configuration.headCount, headDimension)
+            .transposed(0, 2, 1, 3)
+        var key = qkv[0..., 0..., queryDimension..<(queryDimension + keyValueDimension)]
+            .reshaped(batch, time, keyValueHeadCount, headDimension)
+            .transposed(0, 2, 1, 3)
+        var value = qkv[0..., 0..., (queryDimension + keyValueDimension)...]
+            .reshaped(batch, time, keyValueHeadCount, headDimension)
+            .transposed(0, 2, 1, 3)
 
         if let rope {
             let offset = cache.offset

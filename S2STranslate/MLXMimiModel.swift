@@ -12,6 +12,7 @@ public enum MLXMimiNorm: Equatable, Sendable {
 public enum MLXMimiPositionalEmbedding: Equatable, Sendable {
     case none
     case rope
+    case ropeConcat
 }
 
 public enum MLXMimiPadMode: Equatable, Sendable {

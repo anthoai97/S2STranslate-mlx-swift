@@ -102,6 +102,36 @@ struct MLXHibikiRuntimeTests {
         }
     }
 
+    @Test("MLX Hibiki config maps real LM and Depformer topology")
+    func mlxHibikiConfigMapsRealLMAndDepformerTopology() throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let request = try makeLoadRequest(artifacts: artifacts)
+
+        let config = try MLXHibikiModelConfig.load(from: request.configURL)
+
+        #expect(config.topology.textInputVocabSize == 48_001)
+        #expect(config.topology.textOutputVocabSize == 48_000)
+        #expect(config.topology.audioVocabSize == 2_049)
+        #expect(config.topology.audioCodebookCount == 32)
+        #expect(config.topology.generatedCodebookCount == 16)
+        #expect(config.topology.sourceCodebookCount == 16)
+        #expect(config.topology.audioDelays.count == 32)
+        #expect(config.topology.mainTransformer.modelDimension == 2_048)
+        #expect(config.topology.mainTransformer.headCount == 16)
+        #expect(config.topology.mainTransformer.layerCount == 28)
+        #expect(config.topology.mainTransformer.feedForwardDimension == 12_288)
+        #expect(config.topology.mainTransformer.kvRepeat == 2)
+        #expect(config.topology.mainTransformer.positionalEmbedding == .ropeConcat)
+        #expect(config.topology.depformerTransformer.modelDimension == 1_024)
+        #expect(config.topology.depformerTransformer.layerCount == 6)
+        #expect(config.topology.depformerTransformer.feedForwardDimension == 6_144)
+        #expect(config.topology.depformerTransformer.positionalEmbedding == .none)
+        #expect(config.topology.depformerWeightsPerStepSchedule == [
+            0, 1, 2, 3, 4, 5, 6, 7,
+            8, 8, 8, 8, 8, 8, 8, 8,
+        ])
+    }
+
     @Test("MLX Hibiki default engine rejects missing architecture deltas")
     func mlxHibikiDefaultEngineRejectsMissingArchitectureDeltas() throws {
         let artifacts = try preparedHibikiArtifacts(
@@ -114,6 +144,23 @@ struct MLXHibikiRuntimeTests {
 
         #expect(
             throws: HibikiInferenceError.invalidArtifacts("kv_repeat expected 2, got 1")
+        ) {
+            try engine.load(request: request)
+        }
+    }
+
+    @Test("MLX Hibiki default engine rejects incompatible codebook topology")
+    func mlxHibikiDefaultEngineRejectsIncompatibleCodebookTopology() throws {
+        let artifacts = try preparedHibikiArtifacts(
+            configJSON: validConfigJSON(generatedCodebookCount: 15)
+        )
+        let request = try makeLoadRequest(artifacts: artifacts)
+        let engine = MLXHibikiDefaultRuntimeEngine { _ in
+            MLXHibikiWeightsSummary(tensorCount: 1, hasDepformerOutputLayerNorms: true)
+        }
+
+        #expect(
+            throws: HibikiInferenceError.invalidArtifacts("source codebook count expected 16, got 17")
         ) {
             try engine.load(request: request)
         }
@@ -390,15 +437,49 @@ private func makeLoadRequest(artifacts: PreparedModelArtifacts) throws -> MLXHib
 private func validConfigJSON(
     hiddenScale: Int = 6,
     kvRepeat: Int = 2,
-    positionalEmbedding: String = "rope_concat"
+    positionalEmbedding: String = "rope_concat",
+    generatedCodebookCount: Int = 16
 ) -> String {
     """
     {
+      "card": 2048,
+      "n_q": 32,
+      "dep_q": \(generatedCodebookCount),
+      "delays": [
+        0,
+        0, 2, 2, 2, 2, 2, 2, 2, 2,
+        2, 2, 2, 2, 2, 2, 2,
+        0, 2, 2, 2, 2, 2, 2, 2, 2,
+        2, 2, 2, 2, 2, 2, 2
+      ],
+      "dim": 2048,
+      "text_card": 48000,
+      "num_heads": 16,
+      "num_layers": 28,
       "hidden_scale": \(hiddenScale),
+      "causal": true,
+      "layer_scale": null,
+      "context": 3000,
+      "max_period": 20000.0,
+      "gating": "silu",
+      "norm": "rms_norm_f32",
+      "positional_embedding": "\(positionalEmbedding)",
+      "depformer_dim": 1024,
+      "depformer_num_heads": 16,
+      "depformer_num_layers": 6,
+      "depformer_dim_feedforward": null,
+      "depformer_norm": "layer_norm",
+      "depformer_pos_emb": "none",
+      "depformer_weights_per_step_schedule": [
+        0, 1, 2, 3, 4, 5, 6, 7,
+        8, 8, 8, 8, 8, 8, 8, 8
+      ],
+      "demux_second_stream": false,
       "kv_repeat": \(kvRepeat),
-      "transformer": {
-        "positional_embedding": "\(positionalEmbedding)"
-      }
+      "depformer_kv_repeat": 1,
+      "text_card_out": null,
+      "conditioners": {},
+      "cross_attention": false
     }
     """
 }

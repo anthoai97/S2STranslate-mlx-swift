@@ -23,4 +23,6 @@ Issue: `.scratch/hibiki-ios-mlx/issues/22-implement-mlx-hibiki-model-load-and-st
 
 - `MLXHibikiInferenceSession` validates prepared config, q4 weights, and tokenizer artifacts.
 - `MLXHibikiDefaultRuntimeEngine` enforces q4 group size 32 and the Hibiki-Zero architecture deltas.
+- `MLXMimiTransformer` now supports the main Hibiki transformer attention deltas: grouped-query attention with `kv_repeat=2` and `rope_concat` RoPE layout.
+- `MLXHibikiModelConfig` maps `config.json` into the real LM/Depformer topology: main transformer, Depformer transformer, text/audio vocab sizes, 32 total audio codebooks, 16 generated codebooks, 16 source codebooks, delays, and per-step Depformer weight schedule.
 - Full LM/Depformer graph execution is still behind `MLXHibikiRuntimeEngine.step`.

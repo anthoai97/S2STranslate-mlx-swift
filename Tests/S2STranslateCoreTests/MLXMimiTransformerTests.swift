@@ -1,3 +1,4 @@
+import MLX
 import Testing
 
 @testable import S2STranslateCore
@@ -48,6 +49,28 @@ struct MLXMimiTransformerTests {
         MLXMimiProjectedTransformer.resetCache(cache)
 
         #expect(cache.allSatisfy { $0.offset == 0 })
+    }
+
+    @Test("transformer supports Hibiki grouped-query rope concat attention")
+    func transformerSupportsHibikiGroupedQueryRopeConcatAttention() {
+        var configuration = MLXMimiTransformerConfiguration.mimi202407(modelDimension: 8)
+        configuration.headCount = 4
+        configuration.layerCount = 1
+        configuration.kvRepeat = 2
+        configuration.positionalEmbedding = .ropeConcat
+        configuration.context = 8
+        configuration.feedForwardDimension = 16
+        configuration.convLayout = false
+        configuration.usesRotatingKVCache = false
+        let transformer = MLXMimiTransformer(configuration)
+        let cache = transformer.makeCache(batchSize: 1)
+
+        let output = transformer(MLXArray.ones([1, 2, 8]), cache: cache)
+
+        #expect(transformer.layers[0].selfAttention.keyValueHeadCount == 2)
+        #expect(transformer.layers[0].selfAttention.qkvProjection.weightShape == [16, 8])
+        #expect(output.shape == [1, 2, 8])
+        #expect(cache[0].offset == 2)
     }
 
     @Test("empty transformer stream remains empty and cache does not advance")

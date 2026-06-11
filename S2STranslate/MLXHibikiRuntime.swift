@@ -288,6 +288,7 @@ struct MLXHibikiModelConfig: Equatable {
     var hiddenScale: Int
     var kvRepeat: Int
     var positionalEmbedding: String
+    var topology: MLXHibikiModelTopology
 
     static func load(from url: URL) throws -> MLXHibikiModelConfig {
         let data: Data
@@ -310,7 +311,8 @@ struct MLXHibikiModelConfig: Equatable {
         return MLXHibikiModelConfig(
             hiddenScale: try intValue("hidden_scale", in: dictionary),
             kvRepeat: try intValue("kv_repeat", in: dictionary),
-            positionalEmbedding: try positionalEmbedding(in: dictionary)
+            positionalEmbedding: try positionalEmbedding(in: dictionary),
+            topology: try MLXHibikiModelTopology.load(from: dictionary)
         )
     }
 
@@ -335,13 +337,91 @@ struct MLXHibikiModelConfig: Equatable {
                 "positional_embedding expected \(expected.positionalEmbedding), got \(positionalEmbedding)"
             )
         }
+        try topology.validate(against: expected)
     }
 
-    private static func intValue(_ key: String, in dictionary: [String: Any]) throws -> Int {
+    fileprivate static func intValue(_ key: String, in dictionary: [String: Any]) throws -> Int {
         guard let value = dictionary[key] as? Int else {
             throw HibikiInferenceError.invalidArtifacts("config missing \(key)")
         }
         return value
+    }
+
+    fileprivate static func optionalIntValue(_ key: String, in dictionary: [String: Any]) throws -> Int? {
+        guard let value = dictionary[key], !(value is NSNull) else {
+            return nil
+        }
+        guard let intValue = value as? Int else {
+            throw HibikiInferenceError.invalidArtifacts("config \(key) malformed")
+        }
+        return intValue
+    }
+
+    fileprivate static func boolValue(_ key: String, in dictionary: [String: Any]) throws -> Bool {
+        guard let value = dictionary[key] as? Bool else {
+            throw HibikiInferenceError.invalidArtifacts("config missing \(key)")
+        }
+        return value
+    }
+
+    fileprivate static func optionalBoolValue(_ key: String, in dictionary: [String: Any]) throws -> Bool? {
+        guard let value = dictionary[key], !(value is NSNull) else {
+            return nil
+        }
+        guard let boolValue = value as? Bool else {
+            throw HibikiInferenceError.invalidArtifacts("config \(key) malformed")
+        }
+        return boolValue
+    }
+
+    fileprivate static func optionalFloatValue(_ key: String, in dictionary: [String: Any]) throws -> Float? {
+        guard let value = dictionary[key], !(value is NSNull) else {
+            return nil
+        }
+        if let doubleValue = value as? Double {
+            return Float(doubleValue)
+        }
+        if let intValue = value as? Int {
+            return Float(intValue)
+        }
+        throw HibikiInferenceError.invalidArtifacts("config \(key) malformed")
+    }
+
+    fileprivate static func intFromNumber(_ key: String, in dictionary: [String: Any]) throws -> Int {
+        guard let value = dictionary[key] else {
+            throw HibikiInferenceError.invalidArtifacts("config missing \(key)")
+        }
+        if let intValue = value as? Int {
+            return intValue
+        }
+        if let doubleValue = value as? Double {
+            return Int(doubleValue)
+        }
+        throw HibikiInferenceError.invalidArtifacts("config \(key) malformed")
+    }
+
+    fileprivate static func stringValue(_ key: String, in dictionary: [String: Any]) throws -> String {
+        guard let value = dictionary[key] as? String else {
+            throw HibikiInferenceError.invalidArtifacts("config missing \(key)")
+        }
+        return value
+    }
+
+    fileprivate static func intArrayValue(_ key: String, in dictionary: [String: Any]) throws -> [Int] {
+        guard let value = dictionary[key] as? [Int] else {
+            throw HibikiInferenceError.invalidArtifacts("config missing \(key)")
+        }
+        return value
+    }
+
+    fileprivate static func optionalIntArrayValue(_ key: String, in dictionary: [String: Any]) throws -> [Int]? {
+        guard let value = dictionary[key], !(value is NSNull) else {
+            return nil
+        }
+        guard let intArray = value as? [Int] else {
+            throw HibikiInferenceError.invalidArtifacts("config \(key) malformed")
+        }
+        return intArray
     }
 
     private static func positionalEmbedding(in dictionary: [String: Any]) throws -> String {
@@ -353,5 +433,146 @@ struct MLXHibikiModelConfig: Equatable {
             return value
         }
         throw HibikiInferenceError.invalidArtifacts("config missing positional_embedding")
+    }
+}
+
+struct MLXHibikiModelTopology: Equatable {
+    var mainTransformer: MLXMimiTransformerConfiguration
+    var depformerTransformer: MLXMimiTransformerConfiguration
+    var textInputVocabSize: Int
+    var textOutputVocabSize: Int
+    var audioVocabSize: Int
+    var audioCodebookCount: Int
+    var generatedCodebookCount: Int
+    var audioDelays: [Int]
+    var depformerWeightsPerStepSchedule: [Int]?
+
+    var sourceCodebookCount: Int {
+        audioCodebookCount - generatedCodebookCount
+    }
+
+    static func load(from dictionary: [String: Any]) throws -> MLXHibikiModelTopology {
+        let hiddenScale = try MLXHibikiModelConfig.intValue("hidden_scale", in: dictionary)
+        let mainDimension = try MLXHibikiModelConfig.intValue("dim", in: dictionary)
+        let depformerDimension = try MLXHibikiModelConfig.intValue("depformer_dim", in: dictionary)
+        let generatedCodebookCount = try MLXHibikiModelConfig.intValue("dep_q", in: dictionary)
+        let audioCodebookCount = try MLXHibikiModelConfig.intValue("n_q", in: dictionary)
+        let delays = try MLXHibikiModelConfig.intArrayValue("delays", in: dictionary)
+        guard delays.count == audioCodebookCount + 1 else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "delays expected \(audioCodebookCount + 1) values, got \(delays.count)"
+            )
+        }
+
+        return MLXHibikiModelTopology(
+            mainTransformer: MLXMimiTransformerConfiguration(
+                modelDimension: mainDimension,
+                headCount: try MLXHibikiModelConfig.intValue("num_heads", in: dictionary),
+                layerCount: try MLXHibikiModelConfig.intValue("num_layers", in: dictionary),
+                causal: try MLXHibikiModelConfig.boolValue("causal", in: dictionary),
+                normFirst: true,
+                feedForwardBias: false,
+                attentionBias: false,
+                layerScale: try MLXHibikiModelConfig.optionalFloatValue("layer_scale", in: dictionary),
+                positionalEmbedding: try positionalEmbedding(
+                    MLXHibikiModelConfig.stringValue("positional_embedding", in: dictionary)
+                ),
+                usesConvBias: true,
+                gating: true,
+                norm: try norm(MLXHibikiModelConfig.stringValue("norm", in: dictionary)),
+                context: try MLXHibikiModelConfig.intValue("context", in: dictionary),
+                maxPeriod: try MLXHibikiModelConfig.intFromNumber("max_period", in: dictionary),
+                maxSequenceLength: 4_096,
+                kvRepeat: try MLXHibikiModelConfig.intValue("kv_repeat", in: dictionary),
+                feedForwardDimension: hiddenScale * mainDimension,
+                convLayout: false,
+                usesRotatingKVCache: true
+            ),
+            depformerTransformer: MLXMimiTransformerConfiguration(
+                modelDimension: depformerDimension,
+                headCount: try MLXHibikiModelConfig.intValue("depformer_num_heads", in: dictionary),
+                layerCount: try MLXHibikiModelConfig.intValue("depformer_num_layers", in: dictionary),
+                causal: try MLXHibikiModelConfig.optionalBoolValue("depformer_causal", in: dictionary) ?? true,
+                normFirst: true,
+                feedForwardBias: false,
+                attentionBias: try MLXHibikiModelConfig.optionalBoolValue("depformer_layer_scale", in: dictionary) ?? false,
+                layerScale: nil,
+                positionalEmbedding: try positionalEmbedding(
+                    MLXHibikiModelConfig.stringValue("depformer_pos_emb", in: dictionary)
+                ),
+                usesConvBias: true,
+                gating: true,
+                norm: try norm(MLXHibikiModelConfig.stringValue("depformer_norm", in: dictionary)),
+                context: try MLXHibikiModelConfig.optionalIntValue("depformer_context", in: dictionary)
+                    ?? generatedCodebookCount,
+                maxPeriod: try MLXHibikiModelConfig.optionalIntValue("depformer_max_period", in: dictionary) ?? 8,
+                maxSequenceLength: 4_096,
+                kvRepeat: try MLXHibikiModelConfig.optionalIntValue("depformer_kv_repeat", in: dictionary) ?? 1,
+                feedForwardDimension: try MLXHibikiModelConfig.optionalIntValue(
+                    "depformer_dim_feedforward",
+                    in: dictionary
+                ) ?? hiddenScale * depformerDimension,
+                convLayout: false,
+                usesRotatingKVCache: false
+            ),
+            textInputVocabSize: try MLXHibikiModelConfig.intValue("text_card", in: dictionary) + 1,
+            textOutputVocabSize: try MLXHibikiModelConfig.optionalIntValue("text_card_out", in: dictionary)
+                ?? MLXHibikiModelConfig.intValue("text_card", in: dictionary),
+            audioVocabSize: try MLXHibikiModelConfig.intValue("card", in: dictionary) + 1,
+            audioCodebookCount: audioCodebookCount,
+            generatedCodebookCount: generatedCodebookCount,
+            audioDelays: Array(delays.dropFirst()),
+            depformerWeightsPerStepSchedule: try MLXHibikiModelConfig.optionalIntArrayValue(
+                "depformer_weights_per_step_schedule",
+                in: dictionary
+            )
+        )
+    }
+
+    func validate(against expected: MLXHibikiRuntimeConfiguration) throws {
+        guard mainTransformer.headCount % mainTransformer.kvRepeat == 0 else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "main transformer heads \(mainTransformer.headCount) not divisible by kv_repeat \(mainTransformer.kvRepeat)"
+            )
+        }
+        guard depformerTransformer.headCount % depformerTransformer.kvRepeat == 0 else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "depformer heads \(depformerTransformer.headCount) not divisible by kv_repeat \(depformerTransformer.kvRepeat)"
+            )
+        }
+        guard sourceCodebookCount == expected.codebookCount else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "source codebook count expected \(expected.codebookCount), got \(sourceCodebookCount)"
+            )
+        }
+        guard generatedCodebookCount == expected.codebookCount else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "generated codebook count expected \(expected.codebookCount), got \(generatedCodebookCount)"
+            )
+        }
+    }
+
+    private static func positionalEmbedding(_ value: String) throws -> MLXMimiPositionalEmbedding {
+        switch value {
+        case "none":
+            return .none
+        case "rope":
+            return .rope
+        case "rope_concat":
+            return .ropeConcat
+        default:
+            throw HibikiInferenceError.invalidArtifacts("unsupported positional_embedding \(value)")
+        }
+    }
+
+    private static func norm(_ value: String) throws -> MLXMimiNorm {
+        switch value {
+        case "layer_norm":
+            return .layerNorm
+        case "rms_norm", "rms_norm_f32":
+            return .rmsNorm
+        default:
+            throw HibikiInferenceError.invalidArtifacts("unsupported norm \(value)")
+        }
     }
 }
