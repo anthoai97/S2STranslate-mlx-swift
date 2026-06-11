@@ -79,6 +79,40 @@ struct StreamingHibikiInferenceTests {
         #expect(session.observations.lastEventName == "playback:streamStopped")
     }
 
+    @Test("translation backend flushes delayed text after file input ends")
+    @MainActor
+    func translationBackendFlushesDelayedTextAfterFileInputEnds() async {
+        let session = ExperimentSession(
+            backend: HibikiTranslationExperimentBackend(
+                artifactPreparer: ModelArtifactPreparer(
+                    manifest: .hibikiQ4Default,
+                    provider: DemoModelArtifactProvider()
+                ),
+                audioSource: FixtureAudioInputSource(sampleRate: 24_000, chunkSampleCount: 1_920, chunkCount: 1),
+                mimiEncoder: DeterministicMimiStreamingEncoder(),
+                inferenceSession: DeterministicHibikiInferenceSession(visibleTextPieces: [" tail"]),
+                mimiDecoder: DeterministicMimiStreamingDecoder(),
+                playbackSink: BufferedPlaybackSink(),
+                generationConfiguration: HibikiGenerationConfiguration(
+                    tailSilenceFrameCount: 8,
+                    postInputPaddingStopFrameCount: 3
+                )
+            )
+        )
+
+        await session.prepare()
+        await session.start()
+
+        #expect(session.state == .running)
+        #expect(session.observations.audioChunkCount == 1)
+        #expect(session.observations.mimiEncodedFrameCount == 5)
+        #expect(session.observations.hibikiStepCount == 5)
+        #expect(session.observations.hibikiVisibleTextCount == 1)
+        #expect(session.observations.output == " tail")
+        #expect(session.observations.hibikiGeneratedAudioFrameCount == 5)
+        #expect(session.observations.playbackChunkCount == 5)
+    }
+
     @Test("inference failures reach session failure state")
     @MainActor
     func inferenceFailuresReachSessionFailureState() async {

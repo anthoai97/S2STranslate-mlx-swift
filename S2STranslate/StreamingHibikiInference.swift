@@ -7,19 +7,25 @@ public struct HibikiGenerationConfiguration: Equatable, Sendable {
     public var topK: Int
     public var textTopK: Int
     public var voiceTransferEnabled: Bool
+    public var tailSilenceFrameCount: Int
+    public var postInputPaddingStopFrameCount: Int
 
     nonisolated public init(
         temperature: Double = 0.8,
         textTemperature: Double = 0.8,
         topK: Int = 250,
         textTopK: Int = 250,
-        voiceTransferEnabled: Bool = false
+        voiceTransferEnabled: Bool = false,
+        tailSilenceFrameCount: Int = 0,
+        postInputPaddingStopFrameCount: Int = 12
     ) {
         self.temperature = temperature
         self.textTemperature = textTemperature
         self.topK = topK
         self.textTopK = textTopK
         self.voiceTransferEnabled = voiceTransferEnabled
+        self.tailSilenceFrameCount = tailSilenceFrameCount
+        self.postInputPaddingStopFrameCount = postInputPaddingStopFrameCount
     }
 }
 
@@ -59,6 +65,10 @@ public struct HibikiTextOutput: Equatable, Sendable {
 
     public var isVisible: Bool {
         piece?.isEmpty == false
+    }
+
+    public var isBlankOrPadding: Bool {
+        token == 0 || token == 3
     }
 
     public var referenceTraceEvent: ReferenceTraceEvent {
@@ -383,26 +393,32 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
             try await playbackSink.start(sampleRate: decoderDescription.sampleRate)
             events.append(.playback(.streamStarted(sampleRate: decoderDescription.sampleRate)))
 
+            var nextAudioFrameIndex = 0
             for chunk in try await source.chunks() {
                 events.append(.audioInput(.chunk(chunk)))
+                nextAudioFrameIndex = max(nextAudioFrameIndex, chunk.frameIndex + 1)
                 for sourceTokens in try await encoder.encode(chunk) {
-                    events.append(.mimiEncode(.frame(sourceTokens)))
-                    events.append(.hibikiInference(.sourceTokens(sourceTokens)))
-
-                    let step = try await inferenceSession.step(sourceAudioTokens: sourceTokens)
-                    events.append(.hibikiInference(.step(step)))
-                    events.append(.hibikiInference(.text(step.text)))
-                    events.append(.hibikiInference(.generatedAudio(step.generatedAudioTokens)))
-
-                    for decoded in try await decoder.decode(step.generatedAudioTokens) {
-                        events.append(.mimiDecode(.chunk(decoded)))
-                        try await playbackSink.receive(decoded)
-                        events.append(.playback(.chunk(decoded)))
-                    }
+                    _ = try await appendHibikiGeneratedFrameEvents(
+                        sourceTokens: sourceTokens,
+                        inferenceSession: inferenceSession,
+                        decoder: decoder,
+                        playbackSink: playbackSink,
+                        events: &events
+                    )
                 }
             }
 
             events.append(.audioInput(.streamStopped))
+            try await appendHibikiTailFlushEvents(
+                encoderDescription: encoderDescription,
+                generationConfiguration: generationConfiguration,
+                startAudioFrameIndex: nextAudioFrameIndex,
+                encoder: encoder,
+                inferenceSession: inferenceSession,
+                decoder: decoder,
+                playbackSink: playbackSink,
+                events: &events
+            )
             events.append(.mimiEncode(.streamStopped))
             events.append(.hibikiInference(.streamStopped))
             events.append(.mimiDecode(.streamStopped))
@@ -571,26 +587,32 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
             try await playbackSink.start(sampleRate: decoderDescription.sampleRate)
             events.append(.playback(.streamStarted(sampleRate: decoderDescription.sampleRate)))
 
+            var nextAudioFrameIndex = 0
             for chunk in try await source.chunks() {
                 events.append(.audioInput(.chunk(chunk)))
+                nextAudioFrameIndex = max(nextAudioFrameIndex, chunk.frameIndex + 1)
                 for sourceTokens in try await encoder.encode(chunk) {
-                    events.append(.mimiEncode(.frame(sourceTokens)))
-                    events.append(.hibikiInference(.sourceTokens(sourceTokens)))
-
-                    let step = try await inferenceSession.step(sourceAudioTokens: sourceTokens)
-                    events.append(.hibikiInference(.step(step)))
-                    events.append(.hibikiInference(.text(step.text)))
-                    events.append(.hibikiInference(.generatedAudio(step.generatedAudioTokens)))
-
-                    for decoded in try await decoder.decode(step.generatedAudioTokens) {
-                        events.append(.mimiDecode(.chunk(decoded)))
-                        try await playbackSink.receive(decoded)
-                        events.append(.playback(.chunk(decoded)))
-                    }
+                    _ = try await appendHibikiGeneratedFrameEvents(
+                        sourceTokens: sourceTokens,
+                        inferenceSession: inferenceSession,
+                        decoder: decoder,
+                        playbackSink: playbackSink,
+                        events: &events
+                    )
                 }
             }
 
             events.append(.audioInput(.streamStopped))
+            try await appendHibikiTailFlushEvents(
+                encoderDescription: encoderDescription,
+                generationConfiguration: generationConfiguration,
+                startAudioFrameIndex: nextAudioFrameIndex,
+                encoder: encoder,
+                inferenceSession: inferenceSession,
+                decoder: decoder,
+                playbackSink: playbackSink,
+                events: &events
+            )
             events.append(.mimiEncode(.streamStopped))
             events.append(.hibikiInference(.streamStopped))
             events.append(.mimiDecode(.streamStopped))
@@ -652,4 +674,86 @@ private final class RealFileHibikiTranslationComponentStore: @unchecked Sendable
 private struct RealFileHibikiTranslationComponents: Sendable {
     var encoder: any MimiStreamingEncoder
     var decoder: any MimiStreamingDecoder
+}
+
+private func appendHibikiGeneratedFrameEvents(
+    sourceTokens: MimiTokenFrame,
+    inferenceSession: any HibikiInferenceSession,
+    decoder: any MimiStreamingDecoder,
+    playbackSink: any PlaybackSink,
+    events: inout [ExperimentEvent]
+) async throws -> HibikiTextOutput {
+    events.append(.mimiEncode(.frame(sourceTokens)))
+    events.append(.hibikiInference(.sourceTokens(sourceTokens)))
+
+    let step = try await inferenceSession.step(sourceAudioTokens: sourceTokens)
+    events.append(.hibikiInference(.step(step)))
+    events.append(.hibikiInference(.text(step.text)))
+    events.append(.hibikiInference(.generatedAudio(step.generatedAudioTokens)))
+
+    for decoded in try await decoder.decode(step.generatedAudioTokens) {
+        events.append(.mimiDecode(.chunk(decoded)))
+        try await playbackSink.receive(decoded)
+        events.append(.playback(.chunk(decoded)))
+    }
+
+    return step.text
+}
+
+private func appendHibikiTailFlushEvents(
+    encoderDescription: MimiEncoderDescription,
+    generationConfiguration: HibikiGenerationConfiguration,
+    startAudioFrameIndex: Int,
+    encoder: any MimiStreamingEncoder,
+    inferenceSession: any HibikiInferenceSession,
+    decoder: any MimiStreamingDecoder,
+    playbackSink: any PlaybackSink,
+    events: inout [ExperimentEvent]
+) async throws {
+    guard generationConfiguration.tailSilenceFrameCount > 0 else { return }
+
+    var stopDetector = HibikiPostInputStopDetector(
+        requiredBlankOrPaddingFrameCount: generationConfiguration.postInputPaddingStopFrameCount
+    )
+    for tailFrameIndex in 0..<generationConfiguration.tailSilenceFrameCount {
+        let chunkFrameIndex = startAudioFrameIndex + tailFrameIndex
+        let chunk = PCMChunk(
+            frameIndex: chunkFrameIndex,
+            timestampMilliseconds: Double(chunkFrameIndex * encoderDescription.samplesPerFrame)
+                / Double(encoderDescription.sampleRate) * 1000,
+            sampleRate: encoderDescription.sampleRate,
+            samples: Array(repeating: 0, count: encoderDescription.samplesPerFrame)
+        )
+        for sourceTokens in try await encoder.encode(chunk) {
+            let text = try await appendHibikiGeneratedFrameEvents(
+                sourceTokens: sourceTokens,
+                inferenceSession: inferenceSession,
+                decoder: decoder,
+                playbackSink: playbackSink,
+                events: &events
+            )
+            if stopDetector.shouldStop(after: text) {
+                return
+            }
+        }
+    }
+}
+
+private struct HibikiPostInputStopDetector {
+    private let requiredBlankOrPaddingFrameCount: Int
+    private var blankOrPaddingRun = 0
+
+    init(requiredBlankOrPaddingFrameCount: Int) {
+        self.requiredBlankOrPaddingFrameCount = requiredBlankOrPaddingFrameCount
+    }
+
+    mutating func shouldStop(after text: HibikiTextOutput) -> Bool {
+        guard requiredBlankOrPaddingFrameCount > 0 else { return false }
+        if text.isBlankOrPadding {
+            blankOrPaddingRun += 1
+        } else {
+            blankOrPaddingRun = 0
+        }
+        return blankOrPaddingRun >= requiredBlankOrPaddingFrameCount
+    }
 }
