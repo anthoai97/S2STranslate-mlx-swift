@@ -101,8 +101,12 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
     private let weightsReader: WeightsReader?
     private let weightTensorReader: WeightTensorReader?
     private let graphParameterApplier: MLXHibikiGraphParameterApplier
+    private let tokenSampler: HibikiTopKTokenSampler
+    private let randomUnit: () -> Double
+    private let canExecuteStep: Bool
     private var loaded = false
     private var model: MLXHibikiLanguageModel?
+    private var sequenceState = MLXHibikiSequenceState()
 
     public convenience init() {
         self.init(weightTensorReader: { url in
@@ -114,15 +118,23 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
         self.weightsReader = weightsReader
         self.weightTensorReader = nil
         self.graphParameterApplier = MLXHibikiGraphParameterApplier()
+        self.tokenSampler = HibikiTopKTokenSampler()
+        self.randomUnit = { Double.random(in: 0...1) }
+        self.canExecuteStep = false
     }
 
     init(
         weightTensorReader: @escaping WeightTensorReader,
-        graphParameterApplier: MLXHibikiGraphParameterApplier = MLXHibikiGraphParameterApplier()
+        graphParameterApplier: MLXHibikiGraphParameterApplier = MLXHibikiGraphParameterApplier(),
+        tokenSampler: HibikiTopKTokenSampler = HibikiTopKTokenSampler(),
+        randomUnit: @escaping () -> Double = { Double.random(in: 0...1) }
     ) {
         self.weightsReader = nil
         self.weightTensorReader = weightTensorReader
         self.graphParameterApplier = graphParameterApplier
+        self.tokenSampler = tokenSampler
+        self.randomUnit = randomUnit
+        self.canExecuteStep = true
     }
 
     private static func summary(for tensors: [String: MLXMimiWeightTensor]) -> MLXHibikiWeightsSummary {
@@ -163,6 +175,7 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
         }
 
         self.model = model
+        sequenceState.reset()
         loaded = true
     }
 
@@ -174,12 +187,56 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
         guard loaded else {
             throw HibikiInferenceError.notInitialized
         }
-        throw HibikiInferenceError.unavailable("Hibiki MLX model step graph not implemented")
+        guard canExecuteStep, let model else {
+            throw HibikiInferenceError.unavailable("Hibiki MLX model step graph not implemented")
+        }
+        guard sourceAudioTokens.tokens.count == model.topology.sourceCodebookCount else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "source token frame malformed: expected \(model.topology.sourceCodebookCount) tokens, got \(sourceAudioTokens.tokens.count)"
+            )
+        }
+
+        sequenceState.storeSourceTokens(
+            sourceAudioTokens.tokens,
+            frameIndex: frameIndex,
+            model: model
+        )
+        let textToken = try sequenceState.textTokenForMainStep(frameIndex: frameIndex, model: model)
+        let audioTokens = try sequenceState.audioTokensForMainStep(frameIndex: frameIndex, model: model)
+        let mainOutput = try model.mainStep(textToken: textToken, audioTokens: audioTokens)
+        let textSample = try tokenSampler.sample(
+            logits: mainOutput.textLogits.asArray(Float.self),
+            temperature: configuration.textTemperature,
+            topK: configuration.textTopK,
+            randomUnit: randomUnit()
+        )
+        let depformerOutput = try model.sampleDepformer(
+            mainTransformerOutput: mainOutput.transformerOutput,
+            textToken: textSample.token,
+            sampler: tokenSampler,
+            temperature: configuration.temperature,
+            topK: configuration.topK,
+            randomUnit: randomUnit
+        )
+        try sequenceState.storeGeneratedTokens(
+            depformerOutput.audioTokens,
+            textToken: textSample.token,
+            frameIndex: frameIndex,
+            model: model
+        )
+
+        return MLXHibikiStepOutput(
+            textToken: textSample.token,
+            textCandidateTokens: textSample.candidateTokens,
+            audioTokens: depformerOutput.audioTokens
+        )
     }
 
     public func reset() {
         loaded = false
+        model?.resetCaches()
         model = nil
+        sequenceState.reset()
     }
 }
 
@@ -317,6 +374,70 @@ private struct MLXHibikiInferenceState: Sendable {
     var initialized = false
     var nextFrameIndex = 0
     var generationConfiguration = HibikiGenerationConfiguration()
+}
+
+private final class MLXHibikiSequenceState {
+    private var textByFrame: [Int: Int] = [:]
+    private var audioByCodebookAndFrame: [Int: [Int: Int]] = [:]
+
+    func reset() {
+        textByFrame.removeAll()
+        audioByCodebookAndFrame.removeAll()
+    }
+
+    func storeSourceTokens(_ tokens: [Int], frameIndex: Int, model: MLXHibikiLanguageModel) {
+        let sourceOffset = model.topology.generatedCodebookCount
+        for (index, token) in tokens.enumerated() {
+            audioByCodebookAndFrame[sourceOffset + index, default: [:]][frameIndex] = token
+        }
+    }
+
+    func textTokenForMainStep(frameIndex: Int, model: MLXHibikiLanguageModel) throws -> Int {
+        guard frameIndex > 0 else {
+            return model.textPaddingToken
+        }
+        guard let token = textByFrame[frameIndex - 1] else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "main step missing previous text token for frame \(frameIndex - 1)"
+            )
+        }
+        return token
+    }
+
+    func audioTokensForMainStep(frameIndex: Int, model: MLXHibikiLanguageModel) throws -> [Int] {
+        try model.topology.audioDelays.enumerated().map { codebookIndex, delay in
+            let delayedFrameIndex = frameIndex - 1 - delay
+            guard delayedFrameIndex >= 0 else {
+                return model.audioPaddingToken
+            }
+            guard let token = audioByCodebookAndFrame[codebookIndex]?[delayedFrameIndex] else {
+                throw HibikiInferenceError.invalidArtifacts(
+                    "main step missing delayed audio token for codebook \(codebookIndex) frame \(delayedFrameIndex)"
+                )
+            }
+            return token
+        }
+    }
+
+    func storeGeneratedTokens(
+        _ audioTokens: [Int],
+        textToken: Int,
+        frameIndex: Int,
+        model: MLXHibikiLanguageModel
+    ) throws {
+        guard audioTokens.count == model.topology.generatedCodebookCount else {
+            throw HibikiInferenceError.invalidArtifacts(
+                "depformer generated \(audioTokens.count) audio tokens, expected \(model.topology.generatedCodebookCount)"
+            )
+        }
+
+        textByFrame[frameIndex] = textToken
+        for (codebookIndex, token) in audioTokens.enumerated() {
+            let delayedFrameIndex = frameIndex - model.topology.audioDelays[codebookIndex]
+            guard delayedFrameIndex >= 0 else { continue }
+            audioByCodebookAndFrame[codebookIndex, default: [:]][delayedFrameIndex] = token
+        }
+    }
 }
 
 struct MLXHibikiModelConfig: Equatable {

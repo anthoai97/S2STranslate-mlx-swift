@@ -103,6 +103,68 @@ struct MLXHibikiRuntimeTests {
         }
     }
 
+    @Test("MLX Hibiki default engine executes tiny greedy runtime step")
+    func mlxHibikiDefaultEngineExecutesTinyGreedyRuntimeStep() throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: tinyConfigJSON())
+        let files = Dictionary(uniqueKeysWithValues: artifacts.files.map { ($0.role, $0) })
+        let request = MLXHibikiLoadRequest(
+            configURL: URL(fileURLWithPath: files["architectureConfig"]!.location),
+            weightsURL: URL(fileURLWithPath: files["hibikiWeights"]!.location),
+            tokenizerURL: URL(fileURLWithPath: files["tokenizer"]!.location),
+            artifactCount: artifacts.files.count,
+            modelRevision: artifacts.manifest.revision,
+            runtimeConfiguration: MLXHibikiRuntimeConfiguration(
+                hiddenScale: 3,
+                kvRepeat: 1,
+                positionalEmbedding: "rope_concat",
+                codebookCount: 1
+            )
+        )
+        let engine = MLXHibikiDefaultRuntimeEngine(
+            weightTensorReader: { _ in
+                [
+                    "depformer.slices.0.norm.weight": mlxTensor([8]),
+                    "depformer.slices.0.norm.bias": mlxTensor([8]),
+                ]
+            },
+            graphParameterApplier: MLXHibikiGraphParameterApplier(
+                requiredKeys: [
+                    "depformer.slices.0.norm.weight",
+                    "depformer.slices.0.norm.bias",
+                ]
+            ),
+            randomUnit: { 0 }
+        )
+
+        try engine.load(request: request)
+        let first = try engine.step(
+            sourceAudioTokens: tinySourceTokenFrame(frameIndex: 0, token: 5),
+            frameIndex: 0,
+            configuration: HibikiGenerationConfiguration(
+                temperature: 0,
+                textTemperature: 0,
+                topK: 2,
+                textTopK: 2
+            )
+        )
+        let second = try engine.step(
+            sourceAudioTokens: tinySourceTokenFrame(frameIndex: 1, token: 6),
+            frameIndex: 1,
+            configuration: HibikiGenerationConfiguration(
+                temperature: 0,
+                textTemperature: 0,
+                topK: 2,
+                textTopK: 2
+            )
+        )
+
+        #expect(first.textToken == 0)
+        #expect(first.textCandidateTokens == [0, 1])
+        #expect(first.audioTokens == [0])
+        #expect(second.textToken == 0)
+        #expect(second.audioTokens == [0])
+    }
+
     @Test("MLX Hibiki config maps real LM and Depformer topology")
     func mlxHibikiConfigMapsRealLMAndDepformerTopology() throws {
         let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
@@ -605,6 +667,42 @@ private func tinyHibikiTopology() -> MLXHibikiModelTopology {
     )
 }
 
+private func tinyConfigJSON() -> String {
+    """
+    {
+      "card": 15,
+      "n_q": 2,
+      "dep_q": 1,
+      "delays": [0, 0, 0],
+      "dim": 8,
+      "text_card": 16,
+      "num_heads": 2,
+      "num_layers": 1,
+      "hidden_scale": 3,
+      "causal": true,
+      "layer_scale": null,
+      "context": 4,
+      "max_period": 16.0,
+      "gating": "silu",
+      "norm": "rms_norm_f32",
+      "positional_embedding": "rope_concat",
+      "depformer_dim": 8,
+      "depformer_num_heads": 2,
+      "depformer_num_layers": 1,
+      "depformer_dim_feedforward": 24,
+      "depformer_norm": "layer_norm",
+      "depformer_pos_emb": "none",
+      "depformer_weights_per_step_schedule": null,
+      "demux_second_stream": false,
+      "kv_repeat": 1,
+      "depformer_kv_repeat": 1,
+      "text_card_out": null,
+      "conditioners": {},
+      "cross_attention": false
+    }
+    """
+}
+
 private func mlxTensor(_ shape: [Int], type: Float32.Type = Float32.self) -> MLXMimiWeightTensor {
     MLXMimiWeightTensor(shape: shape, array: MLXArray.zeros(shape, type: type))
 }
@@ -669,6 +767,16 @@ private func sourceTokenFrame(frameIndex: Int) -> MimiTokenFrame {
         timestampMilliseconds: Double(frameIndex) * 80,
         codebookCount: 16,
         tokens: Array((101 + frameIndex * 16)..<(117 + frameIndex * 16)),
+        sourceAudioFrameIndex: frameIndex
+    )
+}
+
+private func tinySourceTokenFrame(frameIndex: Int, token: Int) -> MimiTokenFrame {
+    MimiTokenFrame(
+        frameIndex: frameIndex,
+        timestampMilliseconds: Double(frameIndex) * 80,
+        codebookCount: 1,
+        tokens: [token],
         sourceAudioFrameIndex: frameIndex
     )
 }

@@ -5,6 +5,10 @@ struct MLXHibikiMainStepOutput {
     let textLogits: MLXArray
 }
 
+struct MLXHibikiDepformerStepOutput {
+    let audioTokens: [Int]
+}
+
 final class MLXHibikiEmbedding {
     let vocabSize: Int
     let dimensions: Int
@@ -113,6 +117,7 @@ final class MLXHibikiLanguageModel {
     let textLinear: MLXMimiLinear
     let depformerSlices: [MLXHibikiDepformerSlice]
     let mainTransformerCache: [MLXMimiKVCache]
+    let depformerCache: [MLXMimiKVCache]
 
     init(topology: MLXHibikiModelTopology) {
         self.topology = topology
@@ -147,6 +152,7 @@ final class MLXHibikiLanguageModel {
             )
         }
         self.mainTransformerCache = transformer.makeCache(batchSize: 1)
+        self.depformerCache = depformerSlices.first?.transformer.makeCache(batchSize: 1) ?? []
     }
 
     var textPaddingToken: Int {
@@ -186,5 +192,40 @@ final class MLXHibikiLanguageModel {
 
     func resetMainCache() {
         MLXMimiProjectedTransformer.resetCache(mainTransformerCache)
+    }
+
+    func sampleDepformer(
+        mainTransformerOutput: MLXArray,
+        textToken: Int,
+        sampler: HibikiTopKTokenSampler,
+        temperature: Double,
+        topK: Int,
+        randomUnit: () -> Double
+    ) throws -> MLXHibikiDepformerStepOutput {
+        MLXMimiProjectedTransformer.resetCache(depformerCache)
+
+        var lastToken = textToken
+        var audioTokens: [Int] = []
+        for slice in depformerSlices {
+            let tokenIDs = MLXArray([Int32(lastToken)]).reshaped([1, 1])
+            var x = slice.linearIn(mainTransformerOutput) + slice.embedding(tokenIDs)
+            x = slice.transformer(x, cache: depformerCache)
+            let logits = slice.linearOut(slice.norm(x))[0..., -1, 0...]
+            let sampled = try sampler.sample(
+                logits: logits.asArray(Float.self),
+                temperature: temperature,
+                topK: topK,
+                randomUnit: randomUnit()
+            )
+            audioTokens.append(sampled.token)
+            lastToken = sampled.token
+        }
+
+        return MLXHibikiDepformerStepOutput(audioTokens: audioTokens)
+    }
+
+    func resetCaches() {
+        resetMainCache()
+        MLXMimiProjectedTransformer.resetCache(depformerCache)
     }
 }
