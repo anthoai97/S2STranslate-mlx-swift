@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import Testing
 
 @testable import S2STranslateCore
@@ -156,6 +157,67 @@ struct MLXHibikiRuntimeTests {
         #expect(model.depformerSlices[0].norm.biasShape == [1_024])
         #expect(model.depformerSlices[0].transformer.layers.count == 6)
         #expect(model.depformerSlices[0].transformer.layers[0].selfAttention.qkvProjection.weightShape == [3_072, 1_024])
+    }
+
+    @Test("MLX Hibiki graph parameter applier matches q4 artifact target topology")
+    func mlxHibikiGraphParameterApplierMatchesQ4ArtifactTargetTopology() throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let request = try makeLoadRequest(artifacts: artifacts)
+        let config = try MLXHibikiModelConfig.load(from: request.configURL)
+        let model = MLXHibikiLanguageModel(topology: config.topology)
+
+        let shapes = MLXHibikiGraphParameterApplier.expectedShapes(for: model)
+
+        #expect(shapes.count == 2_015)
+        #expect(shapes["text_emb.weight"] == [48_001, 256])
+        #expect(shapes["text_emb.scales"] == [48_001, 64])
+        #expect(shapes["audio_embs.0.weight"] == [2_049, 256])
+        #expect(shapes["out_norm.weight"] == [2_048])
+        #expect(shapes["text_linear.weight"] == [48_000, 256])
+        #expect(shapes["transformer.layers.0.self_attn.in_proj.weight"] == [4_096, 256])
+        #expect(shapes["transformer.layers.0.self_attn.in_proj.scales"] == [4_096, 64])
+        #expect(shapes["transformer.layers.0.gating.linear_in.weight"] == [16_384, 256])
+        #expect(shapes["transformer.layers.0.gating.linear_out.weight"] == [2_048, 1_024])
+        #expect(shapes["depformer.slices.0.emb.weight"] == [48_001, 128])
+        #expect(shapes["depformer.slices.1.emb.weight"] == [2_049, 128])
+        #expect(shapes["depformer.slices.0.norm.bias"] == [1_024])
+        #expect(shapes["depformer.slices.0.transformer.layers.0.self_attn.in_proj.weight"] == [3_072, 128])
+        #expect(shapes["depformer.slices.0.transformer.layers.0.gating.linear_out.weight"] == [1_024, 512])
+    }
+
+    @Test("MLX Hibiki graph parameter applier assigns q4 groups and dense norms")
+    func mlxHibikiGraphParameterApplierAssignsQ4GroupsAndDenseNorms() throws {
+        let model = MLXHibikiLanguageModel(topology: tinyHibikiTopology())
+        let quantization = MLXHibikiQuantizationSpec(bits: 4, groupSize: 4)
+        let requiredKeys: Set<String> = [
+            "text_emb.weight",
+            "text_emb.scales",
+            "text_emb.biases",
+            "out_norm.weight",
+            "depformer.slices.0.norm.weight",
+            "depformer.slices.0.norm.bias",
+        ]
+        let weights: [String: MLXMimiWeightTensor] = [
+            "text_emb.weight": mlxTensor([16, 1], type: UInt32.self),
+            "text_emb.scales": mlxTensor([16, 2]),
+            "text_emb.biases": mlxTensor([16, 2]),
+            "out_norm.weight": mlxTensor([8]),
+            "depformer.slices.0.norm.weight": mlxTensor([8]),
+            "depformer.slices.0.norm.bias": mlxTensor([8]),
+        ]
+
+        try MLXHibikiGraphParameterApplier(
+            requiredKeys: requiredKeys,
+            quantization: quantization
+        )
+        .apply(weights, to: model)
+
+        #expect(model.textEmbedding.quantizedParameters?.weight.shape == [16, 1])
+        #expect(model.textEmbedding.quantizedParameters?.scales.shape == [16, 2])
+        #expect(model.textEmbedding.quantizedParameters?.groupSize == 4)
+        #expect(model.outNorm.rmsNorm?.weight.shape == [8])
+        #expect(model.depformerSlices[0].norm.weight.shape == [8])
+        #expect(model.depformerSlices[0].norm.bias.shape == [8])
     }
 
     @Test("MLX Hibiki default engine rejects missing architecture deltas")
@@ -458,6 +520,68 @@ private func makeLoadRequest(artifacts: PreparedModelArtifacts) throws -> MLXHib
         modelRevision: artifacts.manifest.revision,
         runtimeConfiguration: MLXHibikiRuntimeConfiguration()
     )
+}
+
+private func tinyHibikiTopology() -> MLXHibikiModelTopology {
+    MLXHibikiModelTopology(
+        mainTransformer: MLXMimiTransformerConfiguration(
+            modelDimension: 8,
+            headCount: 2,
+            layerCount: 1,
+            causal: true,
+            normFirst: true,
+            feedForwardBias: false,
+            attentionBias: false,
+            layerScale: nil,
+            positionalEmbedding: .ropeConcat,
+            usesConvBias: true,
+            gating: true,
+            norm: .rmsNorm,
+            context: 4,
+            maxPeriod: 16,
+            maxSequenceLength: 16,
+            kvRepeat: 1,
+            feedForwardDimension: 24,
+            convLayout: false,
+            usesRotatingKVCache: true
+        ),
+        depformerTransformer: MLXMimiTransformerConfiguration(
+            modelDimension: 8,
+            headCount: 2,
+            layerCount: 1,
+            causal: true,
+            normFirst: true,
+            feedForwardBias: false,
+            attentionBias: false,
+            layerScale: nil,
+            positionalEmbedding: .none,
+            usesConvBias: true,
+            gating: true,
+            norm: .layerNorm,
+            context: 1,
+            maxPeriod: 8,
+            maxSequenceLength: 16,
+            kvRepeat: 1,
+            feedForwardDimension: 24,
+            convLayout: false,
+            usesRotatingKVCache: false
+        ),
+        textInputVocabSize: 16,
+        textOutputVocabSize: 16,
+        audioVocabSize: 16,
+        audioCodebookCount: 2,
+        generatedCodebookCount: 1,
+        audioDelays: [0, 0],
+        depformerWeightsPerStepSchedule: nil
+    )
+}
+
+private func mlxTensor(_ shape: [Int], type: Float32.Type = Float32.self) -> MLXMimiWeightTensor {
+    MLXMimiWeightTensor(shape: shape, array: MLXArray.zeros(shape, type: type))
+}
+
+private func mlxTensor(_ shape: [Int], type: UInt32.Type) -> MLXMimiWeightTensor {
+    MLXMimiWeightTensor(shape: shape, array: MLXArray.zeros(shape, type: type))
 }
 
 private func validConfigJSON(

@@ -3,6 +3,14 @@ import MLX
 import MLXFast
 import MLXNN
 
+struct MLXMimiQuantizedAffineParameters {
+    let weight: MLXArray
+    let scales: MLXArray
+    let biases: MLXArray
+    let groupSize: Int
+    let bits: Int
+}
+
 public protocol MLXMimiKVCache: AnyObject {
     var offset: Int { get }
     var maxSize: Int? { get }
@@ -19,6 +27,7 @@ public final class MLXMimiLinear {
     public let biasShape: [Int]?
     private var weightStorage: MLXArray?
     private var biasStorage: MLXArray?
+    var quantizedParameters: MLXMimiQuantizedAffineParameters?
 
     public init(inputDimensions: Int, outputDimensions: Int, bias: Bool = true) {
         self.inputDimensions = inputDimensions
@@ -52,7 +61,47 @@ public final class MLXMimiLinear {
         }
     }
 
+    func quantizedWeightShape(bits: Int) -> [Int] {
+        [outputDimensions, inputDimensions / (32 / bits)]
+    }
+
+    func quantizedScaleBiasShape(groupSize: Int) -> [Int] {
+        [outputDimensions, inputDimensions / groupSize]
+    }
+
+    func setQuantizedParameters(
+        weight: MLXArray,
+        scales: MLXArray,
+        biases: MLXArray,
+        groupSize: Int,
+        bits: Int
+    ) {
+        quantizedParameters = MLXMimiQuantizedAffineParameters(
+            weight: weight,
+            scales: scales,
+            biases: biases,
+            groupSize: groupSize,
+            bits: bits
+        )
+    }
+
     public func callAsFunction(_ x: MLXArray) -> MLXArray {
+        if let quantizedParameters {
+            var output = quantizedMatmul(
+                x,
+                quantizedParameters.weight,
+                scales: quantizedParameters.scales,
+                biases: quantizedParameters.biases,
+                transpose: true,
+                groupSize: quantizedParameters.groupSize,
+                bits: quantizedParameters.bits
+            )
+            if let bias {
+                output = output + bias
+            }
+            return output
+        }
+
         var output = x.matmul(weight.swappedAxes(-1, -2))
         if let bias {
             output = output + bias

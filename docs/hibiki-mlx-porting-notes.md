@@ -26,4 +26,5 @@ Issue: `.scratch/hibiki-ios-mlx/issues/22-implement-mlx-hibiki-model-load-and-st
 - `MLXMimiTransformer` now supports the main Hibiki transformer attention deltas: grouped-query attention with `kv_repeat=2` and `rope_concat` RoPE layout.
 - `MLXHibikiModelConfig` maps `config.json` into the real LM/Depformer topology: main transformer, Depformer transformer, text/audio vocab sizes, 32 total audio codebooks, 16 generated codebooks, 16 source codebooks, delays, and per-step Depformer weight schedule.
 - `MLXHibikiLanguageModel` owns the real graph shell shapes for text/audio embeddings, main transformer, output norm/head, and per-slice Depformer modules.
-- Weight assignment and full LM/Depformer graph execution are still behind `MLXHibikiRuntimeEngine.step`.
+- `MLXHibikiGraphParameterApplier` maps the converted MLX q4 artifact into 2,015 graph tensors: quantized embedding/linear groups (`weight`, `scales`, `biases`) plus dense norm tensors, including the Hibiki-specific per-slice Depformer output norms.
+- Full LM/Depformer graph execution is still behind `MLXHibikiRuntimeEngine.step`.

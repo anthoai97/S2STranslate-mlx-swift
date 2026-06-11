@@ -5,6 +5,7 @@ final class MLXHibikiEmbedding {
     let dimensions: Int
     let weightShape: [Int]
     private var weightStorage: MLXArray?
+    var quantizedParameters: MLXMimiQuantizedAffineParameters?
 
     init(vocabSize: Int, dimensions: Int) {
         self.vocabSize = vocabSize
@@ -22,6 +23,47 @@ final class MLXHibikiEmbedding {
         set {
             weightStorage = newValue
         }
+    }
+
+    func quantizedWeightShape(bits: Int) -> [Int] {
+        [vocabSize, dimensions / (32 / bits)]
+    }
+
+    func quantizedScaleBiasShape(groupSize: Int) -> [Int] {
+        [vocabSize, dimensions / groupSize]
+    }
+
+    func setQuantizedParameters(
+        weight: MLXArray,
+        scales: MLXArray,
+        biases: MLXArray,
+        groupSize: Int,
+        bits: Int
+    ) {
+        quantizedParameters = MLXMimiQuantizedAffineParameters(
+            weight: weight,
+            scales: scales,
+            biases: biases,
+            groupSize: groupSize,
+            bits: bits
+        )
+    }
+
+    func callAsFunction(_ tokenIDs: MLXArray) -> MLXArray {
+        if let quantizedParameters {
+            let shape = tokenIDs.shape
+            let flattened = tokenIDs.flattened()
+            let output = dequantized(
+                quantizedParameters.weight[flattened],
+                scales: quantizedParameters.scales[flattened],
+                biases: quantizedParameters.biases[flattened],
+                groupSize: quantizedParameters.groupSize,
+                bits: quantizedParameters.bits
+            )
+            return output.reshaped(shape + [-1])
+        }
+
+        return weight[tokenIDs]
     }
 }
 

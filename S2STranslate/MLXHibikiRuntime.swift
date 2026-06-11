@@ -96,26 +96,45 @@ public protocol MLXHibikiRuntimeEngine: AnyObject {
 
 public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
     public typealias WeightsReader = (URL) throws -> MLXHibikiWeightsSummary
+    public typealias WeightTensorReader = (URL) throws -> [String: MLXMimiWeightTensor]
 
-    private let weightsReader: WeightsReader
+    private let weightsReader: WeightsReader?
+    private let weightTensorReader: WeightTensorReader?
+    private let graphParameterApplier: MLXHibikiGraphParameterApplier
     private var loaded = false
     private var model: MLXHibikiLanguageModel?
 
-    public init(
-        weightsReader: @escaping WeightsReader = { url in
-            let arrays = try loadArrays(url: url)
-            let keys = Set(arrays.keys)
-            let hasNorms = keys.contains { key in
-                key.hasPrefix("depformer_norms.")
-                    || (key.hasPrefix("depformer.slices.") && key.contains(".norm."))
-            }
-            return MLXHibikiWeightsSummary(
-                tensorCount: arrays.count,
-                hasDepformerOutputLayerNorms: hasNorms
-            )
-        }
-    ) {
+    public convenience init() {
+        self.init(weightTensorReader: { url in
+            try loadArrays(url: url).mapValues { MLXMimiWeightTensor(shape: $0.shape, array: $0) }
+        })
+    }
+
+    public init(weightsReader: @escaping WeightsReader) {
         self.weightsReader = weightsReader
+        self.weightTensorReader = nil
+        self.graphParameterApplier = MLXHibikiGraphParameterApplier()
+    }
+
+    init(
+        weightTensorReader: @escaping WeightTensorReader,
+        graphParameterApplier: MLXHibikiGraphParameterApplier = MLXHibikiGraphParameterApplier()
+    ) {
+        self.weightsReader = nil
+        self.weightTensorReader = weightTensorReader
+        self.graphParameterApplier = graphParameterApplier
+    }
+
+    private static func summary(for tensors: [String: MLXMimiWeightTensor]) -> MLXHibikiWeightsSummary {
+        let keys = Set(tensors.keys)
+        let hasNorms = keys.contains { key in
+            key.hasPrefix("depformer_norms.")
+                || (key.hasPrefix("depformer.slices.") && key.contains(".norm."))
+        }
+        return MLXHibikiWeightsSummary(
+            tensorCount: tensors.count,
+            hasDepformerOutputLayerNorms: hasNorms
+        )
     }
 
     public func load(request: MLXHibikiLoadRequest) throws {
@@ -123,12 +142,24 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
         try config.validate(against: request.runtimeConfiguration)
         let model = MLXHibikiLanguageModel(topology: config.topology)
 
-        let summary = try weightsReader(request.weightsURL)
+        let summary: MLXHibikiWeightsSummary
+        let weights: [String: MLXMimiWeightTensor]?
+        if let weightTensorReader {
+            let loadedWeights = try weightTensorReader(request.weightsURL)
+            weights = loadedWeights
+            summary = Self.summary(for: loadedWeights)
+        } else {
+            weights = nil
+            summary = try weightsReader!(request.weightsURL)
+        }
         guard summary.tensorCount > 0 else {
             throw HibikiInferenceError.invalidArtifacts("hibiki weights contained no tensors")
         }
         if request.runtimeConfiguration.depformerOutputLayerNorm && !summary.hasDepformerOutputLayerNorms {
             throw HibikiInferenceError.invalidArtifacts("hibiki weights missing depformer output LayerNorm tensors")
+        }
+        if let weights {
+            try graphParameterApplier.apply(weights, to: model)
         }
 
         self.model = model
