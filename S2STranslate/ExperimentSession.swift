@@ -20,8 +20,8 @@ public final class ExperimentSession: ObservableObject {
 
     public func prepare() async {
         state = .preparing
-        for event in await backend.prepareEvents() {
-            apply(event)
+        await backend.prepareEvents { [weak self] event in
+            self?.apply(event)
         }
     }
 
@@ -59,6 +59,8 @@ public final class ExperimentSession: ObservableObject {
         switch event {
         case let .preparationProgress(progress):
             observations.progress = progress
+        case let .artifactPreparationProgress(progress):
+            observations.recordArtifactPreparation(progress)
         case .observation:
             break
         case let .audioInput(event):
@@ -101,6 +103,11 @@ public enum ExperimentSessionState: Equatable {
 
 public struct ExperimentObservations: Equatable {
     public var progress: Double
+    public var artifactPreparationSummary: String
+    public var artifactFileName: String
+    public var artifactCompletedFileCount: Int
+    public var artifactTotalFileCount: Int
+    public var artifactFileProgress: Double?
     public var eventCount: Int
     public var lastEventName: String
     public var output: String
@@ -133,6 +140,11 @@ public struct ExperimentObservations: Equatable {
 
     nonisolated public init(
         progress: Double = 0,
+        artifactPreparationSummary: String = "n/a",
+        artifactFileName: String = "n/a",
+        artifactCompletedFileCount: Int = 0,
+        artifactTotalFileCount: Int = 0,
+        artifactFileProgress: Double? = nil,
         eventCount: Int = 0,
         lastEventName: String = "none",
         output: String = "",
@@ -164,6 +176,11 @@ public struct ExperimentObservations: Equatable {
         hibikiSamplingSummary: String = "n/a"
     ) {
         self.progress = progress
+        self.artifactPreparationSummary = artifactPreparationSummary
+        self.artifactFileName = artifactFileName
+        self.artifactCompletedFileCount = artifactCompletedFileCount
+        self.artifactTotalFileCount = artifactTotalFileCount
+        self.artifactFileProgress = artifactFileProgress
         self.eventCount = eventCount
         self.lastEventName = lastEventName
         self.output = output
@@ -205,6 +222,19 @@ public struct ExperimentObservations: Equatable {
                 output += "\n\(line)"
             }
         }
+    }
+
+    mutating func recordArtifactPreparation(_ progress: ArtifactPreparationProgress) {
+        artifactPreparationSummary = progress.summary
+        artifactFileName = progress.fileName
+        artifactTotalFileCount = progress.totalFileCount
+        if progress.phase == .completed {
+            artifactCompletedFileCount = min(progress.completedFileCount + 1, progress.totalFileCount)
+        } else {
+            artifactCompletedFileCount = progress.completedFileCount
+        }
+        artifactFileProgress = progress.fileFractionCompleted
+        self.progress = progress.overallFractionCompleted
     }
 
     mutating func recordAudioInput(_ event: AudioInputEvent) {
@@ -307,11 +337,18 @@ public struct ExperimentObservations: Equatable {
 @MainActor
 public protocol ExperimentBackend {
     func prepareEvents() async -> [ExperimentEvent]
+    func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async
     func runEvents() async -> [ExperimentEvent]
     func stop()
 }
 
 public extension ExperimentBackend {
+    func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+        for event in await prepareEvents() {
+            send(event)
+        }
+    }
+
     func stop() {}
 }
 
@@ -339,6 +376,7 @@ public struct ScriptedExperimentBackend: ExperimentBackend {
 
 public enum ExperimentEvent: Equatable {
     case preparationProgress(Double)
+    case artifactPreparationProgress(ArtifactPreparationProgress)
     case observation(String)
     case audioInput(AudioInputEvent)
     case mimiEncode(MimiEncodeEvent)
@@ -353,6 +391,8 @@ public enum ExperimentEvent: Equatable {
         switch self {
         case .preparationProgress:
             "preparationProgress"
+        case .artifactPreparationProgress:
+            "artifactPreparationProgress"
         case let .observation(name):
             name
         case let .audioInput(event):

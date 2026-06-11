@@ -22,7 +22,7 @@ struct ContentView: View {
                 backend: HibikiTranslationExperimentBackend(
                     artifactPreparer: ModelArtifactPreparer(
                         manifest: .hibikiQ4Default,
-                        provider: DemoModelArtifactProvider()
+                        provider: HuggingFaceModelArtifactProvider()
                     ),
                     audioSource: inputSelection.source,
                     mimiEncoder: DeterministicMimiStreamingEncoder(),
@@ -57,6 +57,8 @@ struct ContentView: View {
                     ExperimentStatusPanel(
                         state: session.state,
                         progress: session.observations.progress,
+                        artifactSummary: session.observations.artifactPreparationSummary,
+                        artifactFileProgress: session.observations.artifactFileProgress,
                         eventCount: session.observations.eventCount,
                         lastEventName: session.observations.lastEventName,
                         statusText: statusText
@@ -263,7 +265,7 @@ private struct ExperimentInfoPanel: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Text("Artifact preparation, file audio input, deterministic Hibiki inference, Mimi decode, and buffered playback demo.")
+                Text("Real artifact preparation, file audio input, deterministic Hibiki inference, Mimi decode, and buffered playback demo.")
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -305,6 +307,8 @@ private struct ExperimentOutputPanel: View {
 private struct ExperimentStatusPanel: View {
     let state: ExperimentSessionState
     let progress: Double
+    let artifactSummary: String
+    let artifactFileProgress: Double?
     let eventCount: Int
     let lastEventName: String
     let statusText: String
@@ -312,8 +316,20 @@ private struct ExperimentStatusPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             if state == .preparing {
-                ProgressView(value: progress)
-                    .transition(.slide)
+                VStack(alignment: .leading, spacing: 6) {
+                    ProgressView(value: progress) {
+                        Text(artifactSummary == "n/a" ? "Preparing artifacts" : artifactSummary)
+                            .font(.callout)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.85)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let artifactFileProgress {
+                        ProgressView(value: artifactFileProgress)
+                            .tint(.secondary)
+                    }
+                }
+                .transition(.slide)
             }
 
             HStack(spacing: 12) {
@@ -327,15 +343,11 @@ private struct ExperimentStatusPanel: View {
                 }
 
                 VStack(alignment: .leading) {
-                    Text("Script")
+                    Text("Events")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Gauge(value: Double(eventCount), in: 0...Double(max(5, eventCount))) {
-                        EmptyView()
-                    } currentValueLabel: {
-                        Text("\(eventCount) events")
-                    }
-                    .tint(.blue)
+                    Text("\(eventCount) events")
+                        .font(.body.monospacedDigit())
                 }
             }
             .padding()
@@ -395,6 +407,24 @@ private struct PlaceholderObservationsPanel: View {
                         Text("Progress")
                             .foregroundStyle(.secondary)
                         Text(observations.progress.formatted(.percent.precision(.fractionLength(0))))
+                    }
+
+                    GridRow {
+                        Text("Artifact")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.artifactPreparationSummary)
+                    }
+
+                    GridRow {
+                        Text("Artifact File")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.artifactFileName)
+                    }
+
+                    GridRow {
+                        Text("File Progress")
+                            .foregroundStyle(.secondary)
+                        Text(artifactFileProgressText)
                     }
 
                     GridRow {
@@ -544,7 +574,7 @@ private struct PlaceholderObservationsPanel: View {
                 .font(.system(.body, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                Text("Fixture PCM chunks, deterministic Hibiki text/audio tokens, decoded PCM chunks, and buffered playback delivery are measured. Real MLX weights, audible playback, model latency, and translation quality are not measured yet.")
+                Text("Real artifact preparation, file PCM chunks, deterministic Hibiki text/audio tokens, decoded PCM chunks, and buffered playback delivery are measured. Real MLX runtime execution, audible playback, model latency, and translation quality are not measured yet.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -568,6 +598,11 @@ private struct PlaceholderObservationsPanel: View {
     private var sampleRateText: String {
         guard observations.audioSampleRate > 0 else { return "n/a" }
         return "\(observations.audioSampleRate) Hz"
+    }
+
+    private var artifactFileProgressText: String {
+        guard let artifactFileProgress = observations.artifactFileProgress else { return "n/a" }
+        return artifactFileProgress.formatted(.percent.precision(.fractionLength(0)))
     }
 
     private var durationText: String {

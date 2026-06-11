@@ -1,6 +1,6 @@
 # Implement Real Hugging Face Artifact Download Cache
 
-Status: ready-for-agent
+Status: complete
 
 ## Parent
 
@@ -14,25 +14,34 @@ This should keep the existing `ModelArtifactProviding` boundary and make the app
 
 ## Acceptance criteria
 
-- [ ] The app can discover cached model artifacts by filename and role before attempting a network download.
-- [ ] Missing runtime artifacts are downloaded from the pinned `ModelRuntimeManifest` repository and revision.
-- [ ] Download URLs use direct Hugging Face `resolve` URLs: `https://huggingface.co/{repo}/resolve/{revision}/{filename}`.
-- [ ] Downloaded artifacts are written atomically into an Application Support `Model Artifact Store` keyed by model repository and pinned revision.
-- [ ] Downloads are anonymous HTTP requests; this issue does not add Hugging Face token, login, or Keychain support.
-- [ ] Validation is limited to successful HTTP response, expected filename, and nonzero byte count; size and checksum validation are deferred.
-- [ ] Progress and clear failure states are surfaced through the existing Experiment Session preparation path.
-- [ ] The UI shows `Artifact Preparation Progress` while **Prepare** is fetching artifacts, including completed artifact count, current filename, and per-file percent when byte counts are available.
-- [ ] After real artifacts are prepared, **Start** may still run the deterministic runtime path, but the UI must clearly label that runtime path as deterministic/not real translation.
-- [ ] Partial downloads are written to temporary files, deleted on failure, and moved into place only after successful validation.
-- [ ] A later **Prepare** skips already-completed artifacts and retries only missing files; byte-range resume is out of scope.
-- [ ] User cancellation during **Prepare** is out of scope for this slice.
-- [ ] When HTTP content length is available, download checks available disk space before writing a large artifact.
-- [ ] Memory preflight is out of scope; issue 12 does not load model weights into memory.
-- [ ] The app's default **Prepare** path uses the real cache-first provider.
-- [ ] Required runtime files are limited to `config.json`, `hibiki.q4.safetensors`, `mimi-pytorch-e351c8d8@125.safetensors`, and `tokenizer_spm_48k_multi6_2.model`.
-- [ ] **Prepare** downloads or verifies all four required runtime files before reporting ready.
-- [ ] Development-only files such as `mlx_hibiki_patch.py` and `verify_mlx_q4.py` are not required by the app at runtime.
-- [ ] Tests cover cache hit, successful fake download, partial download cleanup, HTTP/download failure, and manifest filename mismatch.
+- [x] The app can discover cached model artifacts by filename and role before attempting a network download.
+- [x] Missing runtime artifacts are downloaded from the pinned `ModelRuntimeManifest` repository and revision.
+- [x] Download URLs use direct Hugging Face `resolve` URLs: `https://huggingface.co/{repo}/resolve/{revision}/{filename}`.
+- [x] Downloaded artifacts are written atomically into an Application Support `Model Artifact Store` keyed by model repository and pinned revision.
+- [x] Downloads are anonymous HTTP requests; this issue does not add Hugging Face token, login, or Keychain support.
+- [x] Validation is limited to successful HTTP response, expected filename, and nonzero byte count; size and checksum validation are deferred.
+- [x] Progress and clear failure states are surfaced through the existing Experiment Session preparation path.
+- [x] The UI shows `Artifact Preparation Progress` while **Prepare** is fetching artifacts, including completed artifact count, current filename, and per-file percent when byte counts are available.
+- [x] After real artifacts are prepared, **Start** may still run the deterministic runtime path, but the UI must clearly label that runtime path as deterministic/not real translation.
+- [x] Partial downloads are written to temporary files, deleted on failure, and moved into place only after successful validation.
+- [x] A later **Prepare** skips already-completed artifacts and retries only missing files; byte-range resume is out of scope.
+- [x] User cancellation during **Prepare** is out of scope for this slice.
+- [x] When HTTP content length is available, download checks available disk space before writing a large artifact.
+- [x] Memory preflight is out of scope; issue 12 does not load model weights into memory.
+- [x] The app's default **Prepare** path uses the real cache-first provider.
+- [x] Required runtime files are limited to `config.json`, `hibiki.q4.safetensors`, `mimi-pytorch-e351c8d8@125.safetensors`, and `tokenizer_spm_48k_multi6_2.model`.
+- [x] **Prepare** downloads or verifies all four required runtime files before reporting ready.
+- [x] Development-only files such as `mlx_hibiki_patch.py` and `verify_mlx_q4.py` are not required by the app at runtime.
+- [x] Tests cover cache hit, successful fake download, partial download cleanup, HTTP/download failure, and manifest filename mismatch.
+
+## Implementation notes
+
+- Added `HuggingFaceModelArtifactProvider` as the app default provider for **Prepare**.
+- Runtime artifacts are stored under Application Support `ModelArtifacts/{repo}/{revision}` with safe repo/revision path components.
+- Downloads use direct anonymous Hugging Face `resolve` URLs and stream into hidden `.download` temp files before moving into place.
+- The downloader checks HTTP status, reports byte progress when `Content-Length` is available, and preflights disk space for known content lengths.
+- The Experiment Session now streams `Artifact Preparation Progress` events during preparation so the UI can show current file, overall progress, and per-file percent.
+- Existing deterministic Mimi/Hibiki/decode/playback components remain in the **Start** path until the MLX-backed runtime issues land.
 
 ## Notes
 

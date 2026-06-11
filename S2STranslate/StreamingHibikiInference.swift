@@ -294,16 +294,45 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
 
     public func prepareEvents() async -> [ExperimentEvent] {
         let result = await artifactPreparer.prepare()
-        var events = result.progressEvents.map(ExperimentEvent.preparationProgress)
+        var events = artifactEvents(from: result)
 
+        events.append(contentsOf: await terminalPrepareEvents(from: result))
+        return events
+    }
+
+    public func prepareEvents(send: @escaping @MainActor (ExperimentEvent) -> Void) async {
+        let result = await artifactPreparer.prepare { artifactProgress in
+            await MainActor.run {
+                send(.artifactPreparationProgress(artifactProgress))
+                send(.preparationProgress(artifactProgress.overallFractionCompleted))
+            }
+        }
+
+        for event in await terminalPrepareEvents(from: result) {
+            send(event)
+        }
+    }
+
+    private func artifactEvents(from result: ModelArtifactPreparationResult) -> [ExperimentEvent] {
+        let events = result.artifactProgressEvents.flatMap { artifactProgress in
+            [
+                ExperimentEvent.artifactPreparationProgress(artifactProgress),
+                ExperimentEvent.preparationProgress(artifactProgress.overallFractionCompleted),
+            ]
+        }
+        if events.isEmpty {
+            return result.progressEvents.map(ExperimentEvent.preparationProgress)
+        }
+        return events
+    }
+
+    private func terminalPrepareEvents(from result: ModelArtifactPreparationResult) async -> [ExperimentEvent] {
         if let failure = result.failure {
-            events.append(.failure(failure.userVisibleMessage))
-            return events
+            return [.failure(failure.userVisibleMessage)]
         }
 
         guard let artifacts = result.artifacts else {
-            events.append(.failure(HibikiInferenceError.invalidArtifacts("missing prepared artifacts").userVisibleMessage))
-            return events
+            return [.failure(HibikiInferenceError.invalidArtifacts("missing prepared artifacts").userVisibleMessage)]
         }
 
         do {
@@ -311,18 +340,22 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
                 artifacts: artifacts,
                 configuration: generationConfiguration
             )
-            events.append(.hibikiInference(.streamStarted(description)))
-            events.append(.ready)
+            return [
+                .hibikiInference(.streamStarted(description)),
+                .ready,
+            ]
         } catch let error as HibikiInferenceError {
-            events.append(.hibikiInference(.streamFailed(error.userVisibleMessage)))
-            events.append(.failure(error.userVisibleMessage))
+            return [
+                .hibikiInference(.streamFailed(error.userVisibleMessage)),
+                .failure(error.userVisibleMessage),
+            ]
         } catch {
             let message = HibikiInferenceError.unavailable(String(describing: error)).userVisibleMessage
-            events.append(.hibikiInference(.streamFailed(message)))
-            events.append(.failure(message))
+            return [
+                .hibikiInference(.streamFailed(message)),
+                .failure(message),
+            ]
         }
-
-        return events
     }
 
     public func runEvents() async -> [ExperimentEvent] {

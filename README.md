@@ -4,20 +4,20 @@ S2STranslate is an experimental iOS app for running and inspecting streaming spe
 
 ## Current phase
 
-The app currently implements the Experiment Session skeleton, the first model artifact preparation boundary, simulator-friendly streaming audio input slices, downloadable French file input, deterministic stateful Mimi encode/decode boundaries, a deterministic Hibiki inference boundary, and a buffered playback sink. It does not run real MLX-backed model inference, live microphone capture, MLX-backed Mimi weights, or audible device playback yet.
+The app currently implements the Experiment Session skeleton, a real Hugging Face artifact download/cache path, simulator-friendly streaming audio input slices, downloadable French file input, deterministic stateful Mimi encode/decode boundaries, a deterministic Hibiki inference boundary, and a buffered playback sink. It does not run real MLX-backed model inference, live microphone capture, MLX-backed Mimi weights, or audible device playback yet.
 
 What works today:
 
 - A SwiftUI proof-of-concept screen for an Experiment Session
 - A generic lifecycle: unloaded, preparing, ready, running, stopped, failed
-- A manifest-driven artifact preparation backend with a demo provider
+- A manifest-driven artifact preparation backend that downloads the pinned Hibiki-Zero runtime files anonymously from Hugging Face into Application Support
 - Fixture and file-backed audio sources that emit timestamped 24 kHz chunks
 - A small French sample catalog sourced from Kyutai's Hibiki-Zero sample Space, cached locally after first download
 - A protocol-backed Mimi streaming encoder boundary that emits deterministic token frames at the 80 ms / 12.5 Hz cadence
 - A protocol-backed Hibiki inference boundary that consumes source Mimi token frames and emits deterministic text plus generated target audio-token frames
 - A protocol-backed Mimi streaming decoder boundary that emits deterministic decoded PCM chunks
 - A buffered playback sink that receives decoded chunks without requiring device audio hardware
-- Cache-first artifact preparation semantics covered by tests
+- Cache-first artifact preparation semantics covered by tests, including direct Hugging Face resolve URLs, repo/revision storage, partial-download cleanup, and download failure mapping
 - Distinct missing, inaccessible, corrupt, incompatible, and too-large artifact failures
 - Session observations such as preparation progress, event count, last event, audio input status, sample rate, chunk count, streamed duration, Mimi frame count, codebook count, token count, Hibiki step count, text token count, generated audio frame count, decoded chunk count, and playback delivery count
 - A Moshi-inspired running UI: info/output panel, status strip, centered primary control, and settings popover
@@ -27,14 +27,14 @@ What works today:
 
 1. Open the app.
 2. Use the gear button to choose a French sample input if needed.
-3. Tap **Prepare** to run the demo artifact preparation path for the pinned Hibiki-Zero manifest.
+3. Tap **Prepare** to download or verify the pinned Hibiki-Zero runtime artifacts. First run may take a while because the model files are large.
 4. Tap **Start** to download/cache the selected MP3 if needed, decode it to PCM chunks, and stream those chunks through the session backend, deterministic Mimi encoder, deterministic Hibiki inference, Mimi decoder, and buffered playback sink.
 5. Watch the output panel show deterministic text and, if enabled, the observations panel update audio status, chunk count, sample rate, duration, Mimi frame count, codebook count, token count, Hibiki steps, generated audio frames, decoded chunks, and playback delivery.
 6. Tap **Stop** to end the current attempt.
 7. Tap **New Session** to reset after a stopped or failed terminal state.
 8. Use the gear button to show or hide session observations or trigger a fake failure.
 
-The demo artifact provider does not download real model weights yet. File audio, deterministic Mimi, and deterministic Hibiki observations are not real microphone capture, MLX token/audio quality, model latency, memory, translation quality, or audible playback.
+The Prepare step now works with real runtime artifacts, but Start still uses deterministic Mimi, deterministic Hibiki, and buffered playback. The current demo is not real microphone capture, MLX token/audio quality, model latency, memory, translation quality, or audible playback.
 
 ## Development
 
