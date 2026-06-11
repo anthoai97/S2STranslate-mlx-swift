@@ -30,3 +30,22 @@ Use this checklist for issue 25 device/simulator smoke runs. The target flow is:
 6. Confirm visible English text appears incrementally once real Hibiki text output is enabled.
 7. Confirm generated English voice is audible on device playback, or inspect decoded/playback chunk metrics when using a buffered sink.
 8. Confirm failures from artifact preparation, model load, encode, inference, decode, and playback are surfaced in the session state.
+
+## Automated Smoke Command
+
+Run the guarded smoke test only on a machine with the full local artifacts and enough memory for the 3B q4 graph:
+
+```sh
+S2S_RUN_REAL_FILE_SMOKE_TESTS=1 swift test --filter RealFileFrenchEnglishSmoke
+```
+
+By default it reads artifacts from `ref/hibiki-zero-mlx/weights` and downloads `French Europarl short 1` through the existing fixture cache. Override these paths when needed:
+
+```sh
+S2S_RUN_REAL_FILE_SMOKE_TESTS=1 \
+S2S_REAL_FILE_SMOKE_WEIGHTS_DIR=/path/to/weights \
+S2S_REAL_FILE_SMOKE_AUDIO_PATH=/path/to/french-europarl-short-1.mp3 \
+swift test --filter RealFileFrenchEnglishSmoke
+```
+
+The test asserts real file decode, Mimi encode, Hibiki stepping/text, Mimi decode, and buffered playback counters are all nonzero.
