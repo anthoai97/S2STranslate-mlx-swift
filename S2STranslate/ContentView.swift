@@ -25,7 +25,7 @@ struct ContentView: View {
                         provider: HuggingFaceModelArtifactProvider()
                     ),
                     audioSource: inputSelection.source,
-                    playbackSink: AVAudioPlaybackSink(),
+                    playbackSink: Self.defaultPlaybackSink(),
                     generationConfiguration: HibikiGenerationConfiguration(
                         tailSilenceFrameCount: 8,
                         postInputPaddingStopFrameCount: 3
@@ -79,6 +79,14 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.2), value: session.state)
             .animation(.easeInOut(duration: 0.2), value: session.observations.output)
         }
+    }
+
+    private static func defaultPlaybackSink() -> any PlaybackSink {
+        #if targetEnvironment(simulator)
+        BufferedPlaybackSink()
+        #else
+        AVAudioPlaybackSink()
+        #endif
     }
 
     private var bottomControls: some View {
@@ -266,7 +274,7 @@ private struct ExperimentInfoPanel: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
 
-                Text("Real artifact preparation, file audio input, MLX Mimi encode/decode, MLX Hibiki inference, and device playback demo.")
+                Text("Real artifact preparation, file audio input, MLX Mimi encode/decode, MLX Hibiki inference, and playback delivery demo.")
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
