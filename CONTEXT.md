@@ -92,6 +92,10 @@ _Avoid_: Language support, locale, localization
 A translation attempt where source audio is encoded into audio tokens incrementally, the model samples target tokens as the input arrives, and output audio is decoded incrementally.
 _Avoid_: Batch translation, offline translation
 
+**Model-Backed Translation Path**:
+A Streaming Translation attempt that uses real prepared artifacts and runtime model components instead of deterministic test doubles. It is distinct from the Experiment Session `Running` state, which only means active work is in progress.
+_Avoid_: Running, demo path, actually running
+
 **Input End Flush**:
 The offline/file-mode behavior that marks the source audio end and continues sampling until the configured post-input stop condition is reached.
 _Avoid_: Live disconnect, stop button
@@ -119,6 +123,14 @@ _Avoid_: App config, runtime manifest
 **Model Runtime Manifest**:
 A repo-local, machine-readable control file that tells the app which model repository, revision, files, defaults, and loading policy to use.
 _Avoid_: Model architecture config, Hugging Face config
+
+**Model Artifact Store**:
+The app-owned durable storage location for prepared model artifacts. It lives under Application Support and is keyed by model repository and Model Revision so expensive runtime files are not treated as user documents or disposable caches.
+_Avoid_: Downloads folder, cache folder, documents
+
+**Artifact Preparation Progress**:
+User-visible progress for model artifact preparation. It reports both overall artifact completion and the current artifact being downloaded or validated, with per-file byte progress when available.
+_Avoid_: Loading spinner, model load progress
 
 **Implementation Provenance**:
 Reference material that explains how a model artifact was produced or patched, used to guide implementation but not loaded by the app at runtime.
