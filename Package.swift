@@ -36,6 +36,7 @@ let package = Package(
             sources: [
                 "ExperimentSession.swift",
                 "FileAudioInput.swift",
+                "MLXMimiModel.swift",
                 "MLXMimiRuntime.swift",
                 "ModelArtifactPreparation.swift",
                 "ReferenceTrace.swift",

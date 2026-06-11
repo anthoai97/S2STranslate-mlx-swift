@@ -1,6 +1,6 @@
 # Port Mimi Module Structure From MoshiLib
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -14,14 +14,25 @@ The goal is to make the repo own the Mimi architecture boundary while keeping `r
 
 ## Acceptance criteria
 
-- [ ] Port or adapt the Mimi configuration shape from `ref/moshi-swift/MoshiLib/Mimi.swift`.
-- [ ] Add repo-owned MLX module shells for the Mimi encoder path, decoder path, transformer path, downsample/upsample path, and quantizer path.
-- [ ] The module structure can be instantiated with the default 2024-07 configuration for `16` codebooks.
-- [ ] The module structure preserves the expected codec metadata: mono `24 kHz`, `12.5 Hz`, `1920` samples per frame, `2048` quantizer bins, and `16` codebooks.
-- [ ] The deterministic encoder/decoder remain default in UI and tests.
-- [ ] Tests cover configuration construction and module-shell instantiation without requiring full safetensors load.
-- [ ] Porting notes call out any deliberate divergence from MoshiLib naming, shapes, or state ownership.
-- [ ] The first pass keeps ported internals close to MoshiLib for traceability; app-specific shaping happens at the `MLXMimiRuntime` boundary.
+- [x] Port or adapt the Mimi configuration shape from `ref/moshi-swift/MoshiLib/Mimi.swift`.
+- [x] Add repo-owned MLX module shells for the Mimi encoder path, decoder path, transformer path, downsample/upsample path, and quantizer path.
+- [x] The module structure can be instantiated with the default 2024-07 configuration for `16` codebooks.
+- [x] The module structure preserves the expected codec metadata: mono `24 kHz`, `12.5 Hz`, `1920` samples per frame, `2048` quantizer bins, and `16` codebooks.
+- [x] The deterministic encoder/decoder remain default in UI and tests.
+- [x] Tests cover configuration construction and module-shell instantiation without requiring full safetensors load.
+- [x] Porting notes call out any deliberate divergence from MoshiLib naming, shapes, or state ownership.
+- [x] The first pass keeps ported internals close to MoshiLib for traceability; app-specific shaping happens at the `MLXMimiRuntime` boundary.
+
+## Verification
+
+- `swift test` passes with 55 tests.
+- `xcodebuild build -project S2STranslate.xcodeproj -scheme S2STranslate -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO` passes.
+
+## Porting notes
+
+- `MLXMimiConfiguration` mirrors MoshiLib `MimiConfig.mimi_2024_07`: Seanet v0.1, projected transformer dimensions, split RVQ settings, and derived downsample stride.
+- Shell class names keep MoshiLib traceability but are prefixed with `MLXMimi` to avoid collisions with the reference code and future app-specific wrappers.
+- The issue 14 shell classes intentionally do not inherit `MLXNN.Module` yet. Under the app target's default `MainActor` isolation, empty `Module` subclasses conflict with `MLXNN.Module.init`; real weight-bearing `Module` ownership should land with the safetensors/key-mapping and real runtime slices.
 
 ## Notes
 
