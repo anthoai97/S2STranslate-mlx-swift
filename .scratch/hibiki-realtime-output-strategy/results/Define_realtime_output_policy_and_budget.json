@@ -1,0 +1,197 @@
+{
+  "basic_info": {
+    "item_name": "Define realtime output policy and budget",
+    "research_focus": "Define a policy for classifying the current Hibiki model-backed translation path into sub-realtime, bare-realtime, and practical-realtime output strategies using the repo's generatedRealtimeFactor metric.",
+    "summary": "Use `generatedRealtimeFactor = generatedAudioDurationSeconds / processingWallTimeSeconds` as the single gating metric for output mode selection. Classify `< 1.0x` as `sub-realtime` and route to deferred or buffered output instead of default live playback, classify `>= 1.0x` and `< 1.25x` as `bare-realtime` and allow live playback only as a warned diagnostic mode, and classify `>= 1.25x` as `practical-realtime` and default live playback. The current measured `0.216x` Hibiki path is firmly sub-realtime, so the immediate policy should disable default live playback for this path and treat performance recovery as separate follow-up work."
+  },
+  "technical_features": {
+    "relevant_primary_sources": [
+      {
+        "title": "Hugging Face Audio Course: Inverse Real-Time Factor (RTFx)",
+        "url": "https://huggingface.co/learn/audio-course/en/chapter5/evaluation",
+        "signal": "Defines the higher-is-better throughput metric `audio duration / processing time`, with `> 1.0` faster than real time, `= 1.0` exact real time, and `< 1.0` slower than real time."
+      },
+      {
+        "title": "Kyutai Hibiki-Zero model card",
+        "url": "https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16",
+        "signal": "States that Hibiki-Zero generates text and audio tokens at a constant `12.5 Hz`, implying an `80 ms` output cadence that can be used as the frame budget for live output policy."
+      },
+      {
+        "title": "Kyutai moshi-swift README",
+        "url": "https://github.com/kyutai-labs/moshi-swift",
+        "signal": "States that Mimi converts `24 kHz` audio to a `12.5 Hz` representation with `80 ms` latency and that the iOS app is a proof of concept, which supports a conservative live-output policy."
+      },
+      {
+        "title": "Kyutai Hibiki README",
+        "url": "https://github.com/kyutai-labs/hibiki/blob/main/README.md",
+        "signal": "Says the MLX-Swift path is experimental on iPhone and that the `1B` model is ideal for on-device inference, which suggests the current heavier path should not be assumed live-capable."
+      },
+      {
+        "title": "MLX Lazy Evaluation documentation",
+        "url": "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html",
+        "signal": "Explains that each graph evaluation has fixed overhead, which is relevant when a streaming loop evaluates small graphs every frame."
+      }
+    ],
+    "local_code_or_docs_to_check": [
+      {
+        "path": "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift",
+        "reason": "Defines `generatedRealtimeFactor` as `decodedAudioDurationSeconds / processingSeconds` and is the authoritative benchmark/reporting seam."
+      },
+      {
+        "path": "docs/real-file-french-english-smoke-test.md",
+        "reason": "Already documents that values below `1.0` mean the model flow is slower than playback consumption."
+      },
+      {
+        "path": ".scratch/real-file-benchmark/latest/benchmark.md",
+        "reason": "Current benchmark baseline showing `0.216x`, `27.463 s` processing time, `5.920 s` generated audio, and stage timing summaries."
+      },
+      {
+        "path": ".scratch/hibiki-ios-mlx/issues/28-investigate-choppy-real-time-translation-playback.md",
+        "reason": "Shows the device-side underrun pattern and a post-prebuffer production rate around `0.23x` realtime."
+      },
+      {
+        "path": "S2STranslate/AVAudioPlaybackSink.swift",
+        "reason": "Contains `AVAudioPlaybackSink`, `DeferredAudioPlaybackSink`, and `BufferedStreamingAudioPlaybackSink`, which are the concrete output strategies available today."
+      },
+      {
+        "path": "S2STranslate/ExperimentSession.swift",
+        "reason": "Owns user-visible observations and is the right place to expose the selected realtime classification and output strategy."
+      },
+      {
+        "path": "S2STranslate/StreamingMimiDecode.swift",
+        "reason": "Defines playback diagnostics reporting that can confirm whether a live-capable classification is actually holding queue depth."
+      },
+      {
+        "path": "S2STranslate/ContentView.swift",
+        "reason": "Currently wires the real-file path to buffered pseudo-streaming and is the first integration point for policy-driven mode selection."
+      }
+    ],
+    "implementation_implications": [
+      "Introduce a small policy type that maps `generatedRealtimeFactor` to `sub-realtime`, `bare-realtime`, or `practical-realtime`, then maps that class to a concrete sink strategy.",
+      "For the current `0.216x` baseline, do not default to `AVAudioPlaybackSink` or small-prebuffer pseudo-streaming. Choose `DeferredAudioPlaybackSink` or an equivalent delayed mode that preserves text and WAV artifacts.",
+      "Treat the `1.0x` threshold as the hard minimum for any live playback attempt because the metric already uses a higher-is-better throughput ratio.",
+      "Treat the `1.0x` to `< 1.25x` band as a diagnostic or warned live mode rather than the default user path, because exact-real-time throughput leaves little room for queue recovery, audio scheduling jitter, or device variance.",
+      "Treat `>= 1.25x` as the default-live band for this repo because an `80 ms` cadence with a `1.25x` throughput target implies an average processing budget of about `64 ms` per generated `80 ms` chunk, leaving approximately `16 ms` of slack.",
+      "Record both the selected class and the numeric factor in observations so logs and screenshots explain why the app used live, buffered, or output-only behavior.",
+      "Keep the benchmark formula stable across tests, docs, and runtime policy to avoid contradictory interpretations of the same metric."
+    ]
+  },
+  "performance_metrics": {
+    "realtime_budget_impact": {
+      "metric_formula": "generatedRealtimeFactor = generatedAudioDurationSeconds / processingWallTimeSeconds",
+      "classification_policy": {
+        "sub_realtime": "< 1.0x",
+        "bare_realtime": ">= 1.0x and < 1.25x",
+        "practical_realtime": ">= 1.25x"
+      },
+      "current_state": {
+        "current_factor": "0.216x",
+        "current_classification": "sub-realtime",
+        "live_playback_consequence": "The model-backed path produces audio far slower than playback consumes it, so a small live prebuffer drains and repeated underruns are expected."
+      },
+      "budget_math": {
+        "output_cadence": "12.5 Hz",
+        "audio_per_generated_chunk": "80 ms",
+        "max_average_processing_per_chunk_for_1_0x": "80 ms",
+        "max_average_processing_per_chunk_for_1_25x": "64 ms",
+        "current_observed_average_processing_per_generated_chunk": "about 371 ms from 27.463 s processing time over 74 decoded chunks",
+        "throughput_improvement_needed_for_1_0x": "about 4.63x",
+        "throughput_improvement_needed_for_1_25x": "about 5.79x",
+        "two_second_prebuffer_drain_estimate_at_0_216x": "about 2.55 s of playback after start"
+      },
+      "policy_inference_note": "[uncertain] The `>= 1.25x` practical-realtime threshold is not a published Kyutai limit. It is a repo policy recommendation derived from the `80 ms` frame cadence, the local requirement for playback headroom above the `1.0x` minimum, and the observed underrun behavior of small live buffers."
+    },
+    "measurement_plan": [
+      "Continue to compute `generatedRealtimeFactor` from the benchmark harness and from comparable device runs using the same fixture and same report formula.",
+      "Attach the policy decision to every real-file run so the report captures factor, class, chosen output strategy, and whether live playback was allowed, warned, or disallowed.",
+      "For any run in the `bare-realtime` or `practical-realtime` bands, also record playback diagnostics including pending seconds, schedule gap, and underrun count, because throughput alone does not prove stable queue health.",
+      "Split the current `Hibiki step` bucket into substages before optimization work so the repo can identify which part of the remaining gap blocks promotion from `sub-realtime` to `bare-realtime`.",
+      "Use the same French-to-English fixture for before/after comparisons and keep tail-flush behavior explicit, because delayed output changes generated duration and perceived throughput."
+    ],
+    "expected_signal": [
+      "At the current `0.216x` baseline, the policy should consistently classify the run as `sub-realtime` and choose deferred or buffered output instead of default live playback.",
+      "A future run should not be considered even `bare-realtime` until `generatedRealtimeFactor` reaches at least `1.0x` and playback diagnostics show that pending audio does not immediately collapse after playback starts.",
+      "A future run should not be promoted to `practical-realtime` until `generatedRealtimeFactor` reaches at least `1.25x` and playback diagnostics show stable positive queue depth with no repeated underruns on target hardware.",
+      "If throughput rises above `1.0x` but playback still fails while pending queue depth stays healthy, the remaining blocker is likely audio-path configuration rather than model starvation."
+    ]
+  },
+  "milestone_significance": {
+    "recommended_next_step": "Implement a minimal `RealtimeOutputPolicy` that consumes `generatedRealtimeFactor`, classifies `< 1.0x` as `sub-realtime`, `>= 1.0x` and `< 1.25x` as `bare-realtime`, and `>= 1.25x` as `practical-realtime`, then wire the real-file path to choose `DeferredAudioPlaybackSink` for the current `0.216x` class while exposing the class and thresholds in observations.",
+    "acceptance_criteria": [
+      "The repo has one explicit policy definition for `sub-realtime`, `bare-realtime`, and `practical-realtime` based on `generatedRealtimeFactor`.",
+      "A run at `0.216x` is classified as `sub-realtime` and does not default to live playback.",
+      "The `1.0x` threshold is treated as the hard minimum for any live attempt, and the `1.25x` threshold is treated as the default-live threshold for this repo.",
+      "Experiment observations or benchmark output show the measured factor, the chosen class, and the chosen output strategy.",
+      "Buffered or deferred mode still preserves generated text and WAV artifacts for sub-realtime runs.",
+      "Playback-only diagnostics remain available so the repo can distinguish model starvation from AVAudio configuration issues after the policy lands."
+    ],
+    "risks": [
+      "The `1.25x` practical threshold is a repo policy rather than an upstream contract and may need tuning by device class or future sink behavior.",
+      "If the policy relies only on a stale last-known benchmark, a model revision or hardware change could misclassify a run.",
+      "Buffered or deferred playback can make the app sound better while hiding unresolved AVAudio configuration issues unless playback-only checks remain part of validation.",
+      "Generated audio duration can exceed source duration because of delayed output and tail flush, so all comparisons must keep using the same report formula rather than mixing source-duration and generated-duration interpretations."
+    ],
+    "open_questions": [
+      "Should live gating use the last benchmark result, a short runtime warmup, or a rolling median of recent runs on the same device and model revision?",
+      "Should the `bare-realtime` band ever auto-start live playback with a larger prebuffer, or should it remain a diagnostic-only mode until the path reaches `practical-realtime`?",
+      "Should thresholds vary between iPhone, simulator, and Mac targets, or should the policy stay device-agnostic and rely on measured factor plus playback diagnostics?",
+      "Should text remain fully live while audio is deferred for `sub-realtime` runs, or should the UI describe the entire run as delayed output mode?",
+      "Which substage inside the current `Hibiki step` bucket is the first bottleneck worth optimizing for the required `4.63x` to `5.79x` throughput gain?"
+    ],
+    "sources": [
+      {
+        "type": "local_doc",
+        "path": ".scratch/real-file-benchmark/latest/benchmark.md",
+        "why_it_matters": "Authoritative local baseline for the current `0.216x` throughput and stage timings."
+      },
+      {
+        "type": "local_doc",
+        "path": ".scratch/hibiki-ios-mlx/issues/28-investigate-choppy-real-time-translation-playback.md",
+        "why_it_matters": "Authoritative local diagnosis showing live prebuffer drain and repeated underruns at about `0.23x` post-prebuffer production speed."
+      },
+      {
+        "type": "local_doc",
+        "path": "docs/real-file-french-english-smoke-test.md",
+        "why_it_matters": "Documents the repo's current interpretation that values below `1.0` are slower than playback consumption."
+      },
+      {
+        "type": "local_code",
+        "path": "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift",
+        "why_it_matters": "Defines the benchmark formula and report output used by the repo."
+      },
+      {
+        "type": "web",
+        "title": "Hugging Face Audio Course: Inverse Real-Time Factor (RTFx)",
+        "url": "https://huggingface.co/learn/audio-course/en/chapter5/evaluation",
+        "why_it_matters": "Provides the external higher-is-better throughput interpretation that matches the repo metric."
+      },
+      {
+        "type": "web",
+        "title": "Kyutai Hibiki-Zero model card",
+        "url": "https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16",
+        "why_it_matters": "Provides the `12.5 Hz` generation cadence used to convert throughput goals into per-chunk timing budgets."
+      },
+      {
+        "type": "web",
+        "title": "Kyutai moshi-swift README",
+        "url": "https://github.com/kyutai-labs/moshi-swift",
+        "why_it_matters": "Provides the `80 ms` Mimi frame latency and the proof-of-concept framing for iOS."
+      },
+      {
+        "type": "web",
+        "title": "Kyutai Hibiki README",
+        "url": "https://github.com/kyutai-labs/hibiki/blob/main/README.md",
+        "why_it_matters": "Provides the experimental iPhone note and the upstream preference for the smaller `1B` model on-device."
+      },
+      {
+        "type": "web",
+        "title": "MLX Lazy Evaluation documentation",
+        "url": "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html",
+        "why_it_matters": "Explains why per-frame graph evaluation overhead is a plausible contributor to poor streaming throughput."
+      }
+    ]
+  },
+  "uncertain": [
+    "realtime_budget_impact"
+  ]
+}

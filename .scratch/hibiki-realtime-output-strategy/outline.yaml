@@ -1,0 +1,30 @@
+topic: .scratch/hibiki-realtime-output-strategy
+execution:
+  output_dir: .scratch/hibiki-realtime-output-strategy/results
+  batch_size: 6
+  items_per_agent: 1
+items:
+  - name: Define realtime output policy and budget
+    category: Solution A
+    description: Research how to classify generated realtime factor into sub-realtime, bare-realtime, and practical-realtime output strategies for the current Hibiki model-backed translation path.
+    local_context: Current generated realtime factor is 0.216x; live minimum target is >=1.0x and practical target is >=1.25x.
+  - name: Route sub-realtime real-file runs to deferred playback
+    category: Solution A
+    description: Research the safest way to route sub-realtime model-backed runs away from live playback and into deferred or buffered output while preserving generated text and WAV artifacts.
+    local_context: DeferredAudioPlaybackSink and BufferedStreamingAudioPlaybackSink already exist; issue 28 indicates live playback underruns because decoded chunks arrive too slowly.
+  - name: Add playback-only diagnostics checks
+    category: Solution A
+    description: Research playback diagnostics that isolate AVAudio scheduling health from model starvation, using already-generated chunks and synthetic 24 kHz mono PCM.
+    local_context: Device logs showed model starvation as dominant, but CoreAudio warnings still need separate validation.
+  - name: Split Hibiki benchmark timing into substages
+    category: Solution B
+    description: Research a profiler-led timing breakdown for the Hibiki step, including main transformer, text sampling, Depformer audio token sampling, state updates, token frame creation, Swift array extraction, and MLX evaluation boundaries.
+    local_context: Latest benchmark reports Hibiki step average at 328.986ms, but this bucket is too coarse to guide optimization.
+  - name: Optimize the first measured Hibiki bottleneck
+    category: Solution B
+    description: Research likely optimization paths for the first measured bottleneck in Swift MLX Hibiki inference, especially lazy evaluation, compilation, array materialization, synchronization, Depformer cost, and memory pressure.
+    local_context: MLX lazy evaluation and compile behavior may matter; current throughput needs about 4.6x improvement for bare realtime.
+  - name: Decide mobile-live model profile strategy
+    category: Solution B
+    description: Research whether a smaller mobile-live Hibiki profile should be added if the current q4 path cannot approach realtime, including upstream mobile assumptions and quality/performance tradeoffs.
+    local_context: Kyutai documents on-device/mobile Hibiki paths; current q4 path may be a better buffered/offline profile than live profile.

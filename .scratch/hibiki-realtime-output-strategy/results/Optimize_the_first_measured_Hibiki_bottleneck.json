@@ -1,0 +1,104 @@
+{
+  "item_name": "Optimize the first measured Hibiki bottleneck",
+  "research_focus": "Find the highest-leverage optimization path inside the currently dominant `Hibiki step` of Swift MLX Hibiki inference, with emphasis on lazy evaluation, compilation, host array materialization, synchronization, Depformer cost, and memory pressure.",
+  "summary": "The current local benchmark already identifies the first measured bottleneck: `Hibiki step` is far larger than Mimi encode or decode. On the 40-chunk benchmark, generated realtime is `0.216x` with average `Hibiki step` `328.986 ms`, versus `21.846 ms` Mimi encode and `22.044 ms` Mimi decode; a nearby run measured `0.242x` with `292.809 ms` average `Hibiki step`. The Swift path currently forces CPU materialization of logits at least 17 times per generated frame: once for text logits in `MLXHibikiRuntime.step`, then once per generated codebook slice inside `MLXHibikiModel.sampleDepformer`, after which `HibikiTopKTokenSampler` sorts those arrays on the CPU. Relative to upstream references, the best first optimization path is to remove repeated host materialization and CPU-side sampling from the hot loop, then measure whether the remaining time is main-transformer compute, Depformer compute, or compile/synchronization overhead.",
+  "relevant_primary_sources": [
+    ".scratch/real-file-benchmark/latest/benchmark.md: latest local benchmark shows `0.216x` generated realtime with average `Hibiki step` `328.986 ms`.",
+    ".scratch/real-file-benchmark/text-check/benchmark.md: nearby validation benchmark shows `0.242x` generated realtime with average `Hibiki step` `292.809 ms`.",
+    "S2STranslate/MLXHibikiRuntime.swift: `step(...)` currently materializes `mainOutput.textLogits.asArray(Float.self)` before sampling.",
+    "S2STranslate/MLXHibikiModel.swift: `sampleDepformer(...)` currently materializes `logits.asArray(Float.self)` once per Depformer slice.",
+    "S2STranslate/StreamingHibikiInference.swift: `HibikiTopKTokenSampler` sorts full Swift `[Float]` logits arrays on the CPU.",
+    "ref/moshi-swift/MoshiLib/LM.swift: upstream MLX-Swift Moshi/Hibiki reference keeps sampling in MLX arrays, calls `textToken.eval()` and `audioTokens.eval()`, and does not convert logits to `[Float]` in the per-slice loop.",
+    "ref/hibiki-zero-mlx/src/infer_mlx_fast.py: Python reference overlaps CPU Mimi encode/decode with GPU LM work and only synchronizes the current text token per frame.",
+    "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html: MLX documents fixed overhead per graph evaluation and warns against evaluating too frequently or via implicit reads such as `item()` or array conversion.",
+    "https://ml-explore.github.io/mlx/build/html/usage/compile.html: MLX documents `compile()` as a way to fuse work and reduce runtime and memory, while also warning that compiled functions should be reused and kept pure with explicit state capture.",
+    "https://ml-explore.github.io/mlx/build/html/usage/unified_memory.html: MLX documents unified memory and stream-based CPU/GPU scheduling, which matters for host/device synchronization and memory pressure analysis.",
+    "https://github.com/ml-explore/mlx-swift-lm/issues/124: recent community report attributes major Swift/Python inference gaps to per-token synchronization, `asyncEval` serialization, and missing stream-context fusion opportunities.",
+    "https://github.com/kyutai-labs/hibiki: Hibiki README says the `1B` variant is ideal for on-device inference and the MLX-Swift implementation was tested on iPhone 16 Pro.",
+    "https://huggingface.co/kyutai/hibiki-1b-mlx-bf16: model card describes Hibiki-M as a `1.7B` mobile model producing speech/text tokens at `12.5 Hz`."
+  ],
+  "local_code_or_docs_to_check": [
+    "S2STranslate/MLXHibikiRuntime.swift: inspect `step(...)` for text-logit materialization, sequence-state bookkeeping, and final token storage.",
+    "S2STranslate/MLXHibikiModel.swift: inspect `mainStep(...)`, `sampleDepformer(...)`, cache reset behavior, and per-slice loop structure.",
+    "S2STranslate/StreamingHibikiInference.swift: inspect `HibikiTopKTokenSampler` because its full-array sort cost is directly in the hot loop.",
+    "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift: extend the benchmark harness so `Hibiki step` is split into substages rather than treated as one timer.",
+    "docs/hibiki-mlx-porting-notes.md: verify the intended Hibiki-Zero topology, especially the 16 generated codebooks and sequential Depformer execution.",
+    "ref/moshi-swift/MoshiLib/LM.swift and ref/moshi-swift/MoshiLib/Utils.swift: use as the closest upstream Swift reference for MLX-native sampling and cache handling.",
+    "ref/hibiki-zero-mlx/src/infer_mlx_fast.py: use as the closest reference for overlapping CPU Mimi work with GPU LM work."
+  ],
+  "implementation_implications": [
+    "Replace the current `[Float]`-based `HibikiTopKTokenSampler` hot path with an MLX-native sampler interface so `MLXHibikiRuntime.step` and `MLXHibikiModel.sampleDepformer` stop calling `.asArray(Float.self)` on logits in the steady-state loop. The closest local reference is `ref/moshi-swift/MoshiLib/Utils.swift` plus `ref/moshi-swift/MoshiLib/LM.swift`.",
+    "Materialize only the final sampled token ids needed by Swift control flow, not the whole text or audio logit vectors. In practice this means evaluating sampled MLX token arrays once per generated frame, or once for text and once for the concatenated Depformer audio token result, instead of once per slice.",
+    "Split `Hibiki step` timing into `mainStep`, `textSampling`, `depformerTotal`, `depformerPerSlice`, and `sequenceState/storeGeneratedTokens` so the next change is based on measured internal cost rather than the current single bucket.",
+    "Add memory diagnostics around the step loop, including peak/active/cache memory if exposed by the bound MLX version, because repeated host materialization can still create allocator churn on unified memory even when explicit copies are avoided.",
+    "Evaluate whether a pure compiled wrapper can be introduced for `mainStep` and possibly for one reusable Depformer slice function with explicit cache/state capture. This is promising because the token shapes and codebook counts are stable, but the exact Swift MLX compile surface in the pinned dependency may require extra exploration. [uncertain]",
+    "If materialization removal does not move the numbers enough, the next path is either Depformer-structure optimization or a smaller mobile-live model profile. Kyutai's own docs point to the 1B mobile variant as the on-device target rather than the larger current path."
+  ],
+  "realtime_budget_impact": [
+    "At the current `0.216x` run, the system needs about `4.63x` more end-to-end throughput just to reach bare realtime and about `5.79x` to reach `1.25x` practical realtime.",
+    "Using the latest benchmark averages, the total model-flow cost per generated `80 ms` frame is roughly `372.876 ms`. If Mimi encode and decode stay near `44 ms` combined, `Hibiki step` would need to fall from about `329 ms` to about `36 ms`, roughly a `9x` reduction, for the same architecture to sustain bare realtime without overlap.",
+    "Using the `0.242x` benchmark, the same calculation still leaves only about `42 ms` for `Hibiki step`, so even the better run implies about a `7x` step reduction if encode/decode stay unchanged.",
+    "This means a successful first optimization should be judged by whether it materially shrinks the dominant bucket and clarifies the remaining gap, not by whether it alone reaches realtime."
+  ],
+  "measurement_plan": [
+    "Extend `benchmarkGeneratedFrame(...)` in `Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift` so it records `mainStep`, `textSampling`, `depformerTotal`, `depformerPerSlice`, and `decoder` timings on the same 40-chunk fixture.",
+    "Add explicit counters in the benchmark or temporary instrumentation for the number of `.asArray(...)`, `.item(...)`, and `eval(...)` calls triggered per generated frame by Hibiki inference.",
+    "Record memory stats before and after the benchmark run, and if available at substage boundaries, using MLX memory APIs such as active, peak, and cache memory.",
+    "Create one experimental branch that only ports sampling/materialization behavior while keeping model math identical. Rerun the same 40-chunk fixture and compare `generatedRealtimeFactor`, `Hibiki step` p50/p95/max, and any new substage timings.",
+    "If the sampler/materialization patch yields less than a meaningful gain, add a second experiment that attempts compiled `mainStep` or compiled reusable slice execution, while watching for first-call compile cost and recompilation due to shape or state changes.",
+    "Optionally cross-check with `ref/hibiki-zero-mlx/src/infer_mlx_fast.py` on the same hardware and artifact set to separate Swift-boundary overhead from model/kernel cost. [uncertain]"
+  ],
+  "expected_signal": [
+    "If host materialization and CPU sampling are a real contributor, the first strong signal should be a noticeable drop in `textSampling` and `depformerPerSlice` time, with a corresponding drop in `Hibiki step` p50 and p95 on the unchanged fixture.",
+    "If repeated synchronization is also contributing, the step max and tail latency should improve, not just the average, because fewer forced reads should reduce bursty stalls.",
+    "If almost all of the time remains in `mainStep` or in pure Depformer compute after the patch, then the current bottleneck is mostly kernel/math cost rather than Swift boundary overhead, and the next step should move toward compile, overlap, or smaller-model strategy instead. [uncertain]",
+    "Even a successful sampling/materialization cleanup is unlikely to erase the full realtime gap by itself; the value of the experiment is that it should either remove an avoidable overhead class or decisively prove that low-level compute dominates. [uncertain]"
+  ],
+  "recommended_next_step": "First land substage instrumentation, then immediately prototype an MLX-native sampler path that removes `.asArray(Float.self)` from `MLXHibikiRuntime.step` and `MLXHibikiModel.sampleDepformer`. This is the smallest optimization with the strongest evidence behind it because the current code performs whole-logit host materialization and CPU sorting in the hottest loop, while the upstream Moshi/Hibiki MLX-Swift reference keeps sampling in MLX arrays.",
+  "acceptance_criteria": [
+    "The benchmark report no longer treats `Hibiki step` as a single opaque bucket; it reports at least `mainStep`, `textSampling`, and `depformerTotal` timings.",
+    "After the first optimization patch, the steady-state Hibiki path no longer converts text or Depformer logits to `[Float]` before sampling.",
+    "The same 40-chunk fixture shows either a `>=20%` improvement in `Hibiki step` p50 or a clear measurement proving that materialization/sampling is not the dominant internal substage.",
+    "Real-file smoke behavior remains correct: nonempty visible text, nonzero Hibiki step count, and nonzero generated audio/decode counts still pass.",
+    "The resulting data makes the next optimization decision obvious: continue with compile/overlap if compute dominates, or continue reducing boundary overhead if sampling/materialization still dominates."
+  ],
+  "risks": [
+    "The main transformer or q4 kernel execution may dominate so strongly that removing boundary overhead produces only a modest gain, leaving the realtime gap largely intact.",
+    "A device-side or MLX-native sampler implementation may complicate the current `candidateTokens` debugging behavior because the code now exposes ranked CPU token lists.",
+    "Compilation may help, but the stateful cache updates and purity requirements in MLX mean a naive compile attempt can fail, recompile too often, or add complexity without a stable speedup. [uncertain]",
+    "Substage instrumentation can perturb timing if it introduces extra evaluation points or host reads; the instrumentation itself must avoid adding the exact overhead being investigated.",
+    "Even with a clean Hibiki-step win, the current larger q4 model path may still be the wrong product target for live mode if Kyutai's mobile assumptions are centered on the smaller 1B variant."
+  ],
+  "open_questions": [
+    "What fraction of the current `293-329 ms` average `Hibiki step` is `mainStep` math, text sampling, Depformer math, or sequence-state bookkeeping?",
+    "Can the pinned `mlx-swift` revision in `Package.resolved` support the compile/state-capture pattern needed for this exact streaming graph without a dependency upgrade? [uncertain]",
+    "Is `MLXMimiProjectedTransformer.resetCache(depformerCache)` per frame strictly required by the Hibiki architecture, or is there any avoidable repeated setup cost left in the current Depformer loop?",
+    "How much of the remaining gap can be recovered by overlapping CPU Mimi encode/decode with GPU Hibiki work in Swift, analogous to `infer_mlx_fast.py`, once the inner Hibiki step is cleaner? [uncertain]",
+    "Should live mode for this app target the current q4 path at all, or should a Hibiki-M / 1B mobile profile be added as the intended live-capable configuration?"
+  ],
+  "sources": [
+    ".scratch/real-file-benchmark/latest/benchmark.md",
+    ".scratch/real-file-benchmark/text-check/benchmark.md",
+    "S2STranslate/MLXHibikiRuntime.swift",
+    "S2STranslate/MLXHibikiModel.swift",
+    "S2STranslate/StreamingHibikiInference.swift",
+    "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift",
+    "docs/hibiki-mlx-porting-notes.md",
+    "ref/moshi-swift/MoshiLib/LM.swift",
+    "ref/moshi-swift/MoshiLib/Utils.swift",
+    "ref/hibiki-zero-mlx/src/infer_mlx_fast.py",
+    "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html",
+    "https://ml-explore.github.io/mlx/build/html/usage/compile.html",
+    "https://ml-explore.github.io/mlx/build/html/usage/unified_memory.html",
+    "https://github.com/ml-explore/mlx-swift-lm/issues/124",
+    "https://github.com/kyutai-labs/hibiki",
+    "https://huggingface.co/kyutai/hibiki-1b-mlx-bf16"
+  ],
+  "uncertain": [
+    "implementation_implications",
+    "measurement_plan",
+    "expected_signal",
+    "risks",
+    "open_questions"
+  ]
+}

@@ -1,0 +1,212 @@
+{
+  "item_name": "Decide mobile-live model profile strategy",
+  "research_focus": "Decide whether the repo should add a smaller mobile-live Hibiki profile if the current `anquachdev/hbk-zero-3b-mlx-q4` path cannot get close to realtime on device, using upstream Kyutai mobile guidance and local benchmark evidence.",
+  "summary": "Recommendation: yes, plan for a second mobile-live profile if the current q4 path stays far below realtime after substage profiling and one focused optimization pass. Upstream Kyutai smartphone guidance is tied to the smaller original Hibiki-M path on iPhone 16 Pro, while the current local repo is pinned to a 3B Hibiki-Zero q4 profile whose official upstream materials emphasize GPU use rather than iPhone deployment. The main tradeoff is that a mobile-live profile should improve throughput materially, but it may reduce speaker similarity and audio fidelity because the upstream mobile Hibiki-M variant uses 8 RVQ quantizers instead of 16, and it may also narrow language coverage if the mobile-live fallback is original Hibiki-M rather than Hibiki-Zero.",
+  "relevant_primary_sources": [
+    {
+      "title": "Kyutai Hibiki README",
+      "url": "https://github.com/kyutai-labs/hibiki",
+      "source_type": "official_repo",
+      "notes": [
+        "States that Hibiki produces text and audio tokens at 12.5 Hz.",
+        "States that the MLX-Swift path can run on an iPhone and was tested on iPhone 16 Pro, but is experimental.",
+        "Lists two released sizes: Hibiki 2B with 16 RVQ per stream and Hibiki 1B with 8 RVQ per stream, described as ideal for on-device inference."
+      ]
+    },
+    {
+      "title": "Hugging Face model card for kyutai/hibiki-1b-mlx-bf16",
+      "url": "https://huggingface.co/kyutai/hibiki-1b-mlx-bf16",
+      "source_type": "official_model_card",
+      "notes": [
+        "Identifies the model as Hibiki-M for mobile.",
+        "Describes a 1.7B-parameter hierarchical Transformer producing tokens at 12.5 Hz.",
+        "Says the model is intended for real-time streaming translation settings."
+      ]
+    },
+    {
+      "title": "High-Fidelity Simultaneous Speech-To-Speech Translation",
+      "url": "https://arxiv.org/html/2502.03382v2",
+      "source_type": "paper",
+      "notes": [
+        "Reports that the smaller distilled Hibiki-M runs faster than real time on an iPhone 16 Pro.",
+        "States Hibiki-M is competitive with Seamless on short-form and long-form translation.",
+        "Explains that Hibiki-M has lower long-form speaker similarity because it models 8 quantizers instead of 16, giving half the audio bitrate."
+      ]
+    },
+    {
+      "title": "kyutai-labs/moshi-swift README",
+      "url": "https://github.com/kyutai-labs/moshi-swift",
+      "source_type": "official_repo",
+      "notes": [
+        "Frames the repo as an experimental iOS implementation for Moshi and Hibiki variants.",
+        "Says the main goal is experimentation on iOS devices and the included iOS app is only a proof of concept.",
+        "Uses `make run-1b`, which aligns with the smaller mobile-oriented profile rather than a larger profile."
+      ]
+    },
+    {
+      "title": "Kyutai Hibiki-Zero README",
+      "url": "https://github.com/kyutai-labs/hibiki-zero",
+      "source_type": "official_repo",
+      "notes": [
+        "Describes Hibiki-Zero as a real-time multilingual speech translation model.",
+        "States that the released model is 3B and requires an NVIDIA GPU with 8 GB to 12 GB VRAM.",
+        "Does not present an official iPhone or MLX mobile deployment path."
+      ]
+    },
+    {
+      "title": "Hugging Face model card for kyutai/hibiki-zero-3b-pytorch-bf16",
+      "url": "https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16",
+      "source_type": "official_model_card",
+      "notes": [
+        "Describes Hibiki-Zero as a 3B-parameter model at 12.5 Hz and about 2.2 kbps audio bitrate.",
+        "Confirms current official release scope is multilingual X-to-English real-time translation.",
+        "Reinforces that the current official checkpoint family is large and GPU-oriented."
+      ]
+    }
+  ],
+  "local_code_or_docs_to_check": [
+    {
+      "path": "S2STranslate/ModelRuntimeManifest.json",
+      "reason": "The app is currently hard-wired to `anquachdev/hbk-zero-3b-mlx-q4`, so any mobile-live plan requires profile-aware artifact selection."
+    },
+    {
+      "path": "S2STranslate/ModelArtifactPreparation.swift",
+      "reason": "Artifact preparation is pinned to one repo and one required Hibiki q4 weight file."
+    },
+    {
+      "path": "docs/hibiki-mlx-porting-notes.md",
+      "reason": "Documents that the current Swift runtime was built around a q4 Hibiki-Zero-style artifact with 32 total codebooks and 16 generated codebooks."
+    },
+    {
+      "path": ".scratch/real-file-benchmark/latest/benchmark.md",
+      "reason": "Provides the latest measured generated realtime factor and per-stage timings for the current path."
+    },
+    {
+      "path": ".scratch/hibiki-ios-mlx/issues/28-investigate-choppy-real-time-translation-playback.md",
+      "reason": "Confirms that live playback failure is mainly model starvation rather than only AVAudio configuration."
+    },
+    {
+      "path": "docs/real-file-french-english-smoke-test.md",
+      "reason": "Defines the current interpretation of generated realtime factor and the model-flow timing report."
+    },
+    {
+      "path": "S2STranslate/ContentView.swift",
+      "reason": "Shows the current playback sink choices that would need to become profile- or capability-aware."
+    }
+  ],
+  "implementation_implications": [
+    "Keep the current `anquachdev/hbk-zero-3b-mlx-q4` path as a buffered or offline-capable profile unless profiling unexpectedly closes most of the 4.63x throughput gap.",
+    "Add explicit profile separation instead of pretending one model can serve both live and buffered use cases: for example `mobile-live` and `buffered-high-quality` or `buffered-multilingual`.",
+    "Make `ModelRuntimeManifest` and artifact preparation profile-aware so the app can switch model repo, tokenizer, bitrate assumptions, and supported-language messaging per profile.",
+    "Treat output-mode policy and model-profile policy as separate decisions: a fast model may still need buffering on slow hardware, and a slow model may still be valid for deferred playback.",
+    "[uncertain] If a mobile-live profile is added soon, the nearest official upstream precedent is original Hibiki-M 1B / 8-RVQ, not an officially released Hibiki-Zero mobile MLX profile. That likely means the mobile-live path would be a different model family with different language coverage, quality characteristics, and integration work."
+  ],
+  "realtime_budget_impact": {
+    "current_local_state": "The latest local benchmark generates 5.920 s of output audio in 27.463 s, for a generated realtime factor of 0.216x.",
+    "frame_budget_math": [
+      "Hibiki and Mimi operate at about 12.5 Hz, so one frame is about 80 ms of audio.",
+      "Current measured average per generated frame is about 21.846 ms Mimi encode + 328.986 ms Hibiki step + 22.044 ms Mimi decode = 372.876 ms total.",
+      "Bare realtime requires the full pipeline to stay at or under about 80 ms per frame.",
+      "A practical live target around 1.25x requires about 64 ms per frame."
+    ],
+    "implication_for_current_q4_path": "At 0.216x, the current path needs about 4.63x more throughput for bare realtime and about 5.79x for a practical live target. With encode and decode already near 44 ms combined, the remaining Hibiki budget would be about 36 ms for bare realtime or about 20 ms for a practical target, far below the current 328.986 ms Hibiki step average.",
+    "decision_signal": "These numbers make the current q4 path look like a buffered or offline profile today, not a credible live profile."
+  },
+  "measurement_plan": [
+    "First split the current `Hibiki step` bucket into substages: main transformer, text sampling, Depformer loop, token extraction, MLX evaluation boundaries, and Swift materialization overhead.",
+    "Repeat the benchmark on the same fixture after one low-level cleanup pass to see whether the q4 path moves materially toward 1.0x or remains far below budget.",
+    "If a candidate mobile-live profile is available, run the same benchmark harness and device playback path on the same fixture and hardware.",
+    "Compare each profile on generated realtime factor, p50 and p95 stage times, memory pressure, startup time, visible-text cadence, underrun count, and final WAV artifact completeness.",
+    "Record profile-specific language coverage and quality observations, especially speaker similarity, naturalness, and translation adequacy."
+  ],
+  "expected_signal": [
+    "If the q4 profile remains below about 0.5x after profiling and one focused optimization pass, it is too far from realtime to be the primary live profile.",
+    "If a smaller mobile-live profile reaches at least 1.0x on the target device and keeps playback underruns at zero after a bounded prebuffer, it is strong evidence to add it.",
+    "If the smaller profile reaches realtime but quality drops sharply in speaker similarity or naturalness, the app should expose it as a live experiment profile and keep the larger q4 path for buffered output.",
+    "[uncertain] If no official smaller Hibiki-Zero mobile checkpoint appears, the best early mobile-live candidate may be original Hibiki-M, which would improve speed but may trade away multilingual parity with the current Hibiki-Zero path."
+  ],
+  "recommended_next_step": "Proceed with a dual-profile plan, but gate it on one short evidence pass: split `Hibiki step`, apply one profiler-led cleanup to the current q4 path, and if the resulting device benchmark is still clearly sub-realtime, add a separate mobile-live profile rather than continuing to market the q4 path as live-capable. In practice, keep the current q4 3B path as buffered or offline by default and treat the smaller profile as the live experiment path.",
+  "acceptance_criteria": [
+    "The repo can describe at least two model intents clearly: a live-capable mobile profile and a buffered or offline higher-capability profile.",
+    "The current q4 profile is no longer assumed to be live by default when its measured generated realtime factor is below 1.0x.",
+    "A candidate mobile-live profile is evaluated on the same fixture and device with the same benchmark harness.",
+    "The mobile-live profile reaches at least 1.0x generated realtime factor on target hardware, with a practical goal of at least 1.25x.",
+    "Live playback with the chosen mobile-live profile finishes without repeated underruns after a bounded prebuffer.",
+    "Profile selection and UI copy make quality and language-coverage differences explicit."
+  ],
+  "risks": [
+    "A second profile increases artifact-management complexity, app-surface complexity, and test-matrix size.",
+    "The upstream mobile precedent is for original Hibiki-M, not the exact current Hibiki-Zero q4 path, so profile split may introduce apples-to-oranges product comparisons.",
+    "The smaller mobile profile likely reduces speaker similarity and audio richness because the paper attributes lower long-form speaker similarity to 8 versus 16 quantizers and lower bitrate.",
+    "[uncertain] If the mobile-live profile uses original Hibiki-M, live mode may narrow source-language support from the current multilingual Hibiki-Zero scope to French-to-English only."
+  ],
+  "open_questions": [
+    "How much of the current 328.986 ms `Hibiki step` is true model compute versus MLX-Swift boundary overhead, synchronization, or array materialization?",
+    "Can the current q4 path gain enough speed from substage fixes to change the product decision, or is the model-size and codebook budget itself the dominant blocker?",
+    "What exact language coverage does the product need for live mode versus buffered mode?",
+    "[uncertain] Is there an official or upcoming smaller Hibiki-Zero mobile checkpoint for MLX or iPhone, or would the live path need to adopt original Hibiki-M or an internally converted variant?",
+    "What minimum quality bar is acceptable for a live experiment profile in translation adequacy, naturalness, and voice similarity?"
+  ],
+  "sources": [
+    {
+      "title": "Local benchmark: real file model flow",
+      "url": "file://.scratch/real-file-benchmark/latest/benchmark.md",
+      "source_type": "local",
+      "why_it_matters": "Primary evidence for the current 0.216x generated realtime factor and per-stage timing."
+    },
+    {
+      "title": "Local issue 28: choppy real-time playback investigation",
+      "url": "file://.scratch/hibiki-ios-mlx/issues/28-investigate-choppy-real-time-translation-playback.md",
+      "source_type": "local",
+      "why_it_matters": "Confirms that live playback failure comes mainly from model starvation after the prebuffer drains."
+    },
+    {
+      "title": "Local model manifest",
+      "url": "file://S2STranslate/ModelRuntimeManifest.json",
+      "source_type": "local",
+      "why_it_matters": "Shows the current repo is pinned to one q4 3B profile."
+    },
+    {
+      "title": "Local Hibiki MLX porting notes",
+      "url": "file://docs/hibiki-mlx-porting-notes.md",
+      "source_type": "local",
+      "why_it_matters": "Documents the current runtime assumptions around q4 weights and generated codebooks."
+    },
+    {
+      "title": "Kyutai Hibiki README",
+      "url": "https://github.com/kyutai-labs/hibiki",
+      "source_type": "official"
+    },
+    {
+      "title": "Hugging Face: kyutai/hibiki-1b-mlx-bf16",
+      "url": "https://huggingface.co/kyutai/hibiki-1b-mlx-bf16",
+      "source_type": "official"
+    },
+    {
+      "title": "High-Fidelity Simultaneous Speech-To-Speech Translation",
+      "url": "https://arxiv.org/html/2502.03382v2",
+      "source_type": "paper"
+    },
+    {
+      "title": "kyutai-labs/moshi-swift README",
+      "url": "https://github.com/kyutai-labs/moshi-swift",
+      "source_type": "official"
+    },
+    {
+      "title": "Kyutai Hibiki-Zero README",
+      "url": "https://github.com/kyutai-labs/hibiki-zero",
+      "source_type": "official"
+    },
+    {
+      "title": "Hugging Face: kyutai/hibiki-zero-3b-pytorch-bf16",
+      "url": "https://huggingface.co/kyutai/hibiki-zero-3b-pytorch-bf16",
+      "source_type": "official"
+    }
+  ],
+  "uncertain": [
+    "implementation_implications",
+    "expected_signal",
+    "risks",
+    "open_questions"
+  ]
+}

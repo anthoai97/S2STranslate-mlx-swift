@@ -1,0 +1,78 @@
+{
+  "item_name": "Route sub-realtime real-file runs to deferred playback",
+  "research_focus": "Use the existing playback sink boundary to stop broken live audio on sub-realtime model-backed real-file runs while preserving generated text output and existing WAV artifact workflows.",
+  "summary": "The current real-file model path is measurably sub-realtime, not live-capable. Issue 28 and the benchmark docs place generated realtime around 0.216x to 0.242x, with device logs showing roughly 0.23x after the 2 second prebuffer drains. Because `BufferedStreamingAudioPlaybackSink(prebufferDurationSeconds: 2)` starts AVAudio before enough output exists, playback repeatedly underruns. The safest immediate change is to classify these runs as sub-realtime and route the app path to `DeferredAudioPlaybackSink(wrapped: AVAudioPlaybackSink())`, which preserves decode and text generation flow and delays audible playback until all generated chunks are buffered.",
+  "relevant_primary_sources": [
+    ".scratch/hibiki-ios-mlx/issues/28-investigate-choppy-real-time-translation-playback.md: device diagnosis shows the 2 second prebuffer drains, underruns reach 115, and model output arrives at about 0.23x realtime.",
+    ".scratch/hibiki-realtime-output-strategy/PRD.md: defines sub-realtime output handling as a product requirement and states current baselines around 0.216x to 0.242x should not be presented as smooth simultaneous playback.",
+    "S2STranslate/AVAudioPlaybackSink.swift: `DeferredAudioPlaybackSink` already buffers decoded chunks until `finish()`, while `BufferedStreamingAudioPlaybackSink` starts once a prebuffer threshold is reached.",
+    "S2STranslate/StreamingHibikiInference.swift: the real-file backend emits Hibiki text and decoded chunk events during generation, then delegates audio delivery through the injected `PlaybackSink`.",
+    "Tests/S2STranslateCoreTests/AVAudioPlaybackSinkTests.swift: tests already prove deferred playback does not start wrapped audio until `finish()` and that buffered pseudo-streaming starts once a threshold is met.",
+    "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift and docs/real-file-french-english-smoke-test.md: existing smoke and benchmark flows already preserve `translation.txt` and `translation.wav` without depending on live AVAudio playback."
+  ],
+  "local_code_or_docs_to_check": [
+    "S2STranslate/ContentView.swift: `defaultTranslateBackend` currently injects `BufferedStreamingAudioPlaybackSink(prebufferDurationSeconds: 2)` for device real-file runs.",
+    "S2STranslate/AVAudioPlaybackSink.swift: verify `DeferredAudioPlaybackSink` and `BufferedStreamingAudioPlaybackSink` behavior and diagnostics exposure.",
+    "S2STranslate/StreamingHibikiInference.swift: confirm `playbackSink.start`, `playbackSink.receive`, and `playbackSink.finish` are the only audio-delivery seams for the real-file run.",
+    "Tests/S2STranslateCoreTests/AVAudioPlaybackSinkTests.swift: keep coverage for deferred scheduling and buffered-start behavior.",
+    "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift: keep `translation.txt` and `translation.wav` generation working through buffered/offline capture paths.",
+    ".scratch/hibiki-ios-mlx/issues/28-investigate-choppy-real-time-translation-playback.md and .scratch/hibiki-realtime-output-strategy/two-solution-research.md: use as the grounding documents for why sub-realtime routes should not default to live playback."
+  ],
+  "implementation_implications": [
+    "Add the output-strategy decision before constructing `RealFileHibikiTranslationExperimentBackend`; the smallest immediate version can hardcode the current q4 real-file path as sub-realtime.",
+    "For sub-realtime runs, replace the current app-path sink with `DeferredAudioPlaybackSink(wrapped: AVAudioPlaybackSink())` and leave the generation loop unchanged.",
+    "Do not modify `appendHibikiGeneratedFrameEvents`; it already emits text and decoded audio events before playback scheduling, so generated text visibility is preserved.",
+    "Keep `BufferedStreamingAudioPlaybackSink` only for future live-capable or explicitly forced-live runs because a larger prebuffer alone does not solve a 0.23x producer.",
+    "Keep `BufferedPlaybackSink` in smoke and benchmark tests for artifact writing. If the interactive app must also save the exact deferred-playback run as a WAV, add a small recording or tee sink because `DeferredAudioPlaybackSink` does not expose buffered chunks."
+  ],
+  "realtime_budget_impact": [
+    "This change does not improve model throughput; it only prevents AVAudio from consuming output faster than the model produces it.",
+    "It removes the need for an impractically large initial live buffer. Issue 28 estimated about 33 seconds of buffered generated audio would be needed to hide underruns at roughly 0.23x realtime.",
+    "It converts the user experience from broken pseudo-live playback to delayed but smooth playback, which fits inspection and demo correctness but not simultaneous translation."
+  ],
+  "measurement_plan": [
+    "Use the existing real-file benchmark path and record `generatedRealtimeFactor`; classify values below 1.0x as sub-realtime.",
+    "After routing to deferred playback, rerun the device real-file flow and verify that no live underrun growth occurs during generation because wrapped AVAudio does not start until `finish()`.",
+    "Replay already-buffered decoded chunks through `AVAudioPlaybackSink` and verify `underrunCount` remains zero or within an explicitly accepted tolerance.",
+    "Keep the smoke and benchmark artifact checks: `translation.txt` must remain nonempty when tail flush is enabled, and `translation.wav` must remain nonempty.",
+    "Expose or log the selected output strategy and the reason, for example the measured realtime factor that caused deferred routing."
+  ],
+  "expected_signal": [
+    "Sub-realtime real-file runs stop producing repeated live-playback underruns because `AVAudioPlaybackSink` is no longer started while the model is still starving the queue.",
+    "Generated text still appears during the run because text events are emitted before playback delivery in the current inference loop.",
+    "Post-generation playback is smooth when the already-buffered decoded chunks are finally scheduled through AVAudio.",
+    "Benchmarks still report roughly 0.216x to 0.242x generated realtime factor, confirming the change is a routing fix rather than a performance fix."
+  ],
+  "recommended_next_step": "Change `S2STranslate/ContentView.swift` so the default device real-file backend routes known sub-realtime model-backed runs to `DeferredAudioPlaybackSink(wrapped: AVAudioPlaybackSink())`, and record an observation string that explains playback is intentionally deferred because current generated realtime is below the live threshold.",
+  "acceptance_criteria": [
+    "With sub-realtime capability, the device real-file app path no longer defaults to `BufferedStreamingAudioPlaybackSink(prebufferDurationSeconds: 2)` for audible output.",
+    "Generated text remains visible during the run and the session still emits decoded audio chunk events.",
+    "Deferred playback starts only after generation finishes and produces smooth playback from already-buffered chunks.",
+    "Existing smoke and benchmark flows continue to write nonempty `translation.txt` and `translation.wav` artifacts.",
+    "The selected output strategy is visible in observations or logs so users understand the run is delayed by design, not failing silently."
+  ],
+  "risks": [
+    "This is a product-safety workaround, not a realtime recovery. Simultaneous translation remains unsolved until model throughput improves.",
+    "If the UI does not clearly explain the mode switch, users may interpret delayed playback as a regression rather than an intentional truth-in-capability change.",
+    "CoreAudio channel-map or converter warnings may still appear when deferred playback finally starts because the workaround does not change AVAudio configuration.",
+    "If the interactive app needs same-run WAV export, an additional recording sink layer will be needed because the deferred sink only forwards chunks to wrapped playback at finish."
+  ],
+  "open_questions": [
+    "Should the first implementation use a hardcoded current capability assumption for the q4 real-file path, or add a small `RealtimeOutputPolicy` immediately?",
+    "Does the interactive app need to persist `translation.wav` from the same deferred-playback run, or is the existing smoke and benchmark artifact path sufficient?",
+    "After deferred routing is in place, should remaining CoreAudio channel-map warnings block playback, or can they be treated as a separate cleanup issue?",
+    "What practical live threshold should re-enable buffered live playback on target hardware: only `>= 1.0x`, or a safer margin such as `>= 1.25x`?"
+  ],
+  "sources": [
+    ".scratch/hibiki-ios-mlx/issues/28-investigate-choppy-real-time-translation-playback.md",
+    ".scratch/hibiki-realtime-output-strategy/PRD.md",
+    ".scratch/hibiki-realtime-output-strategy/two-solution-research.md",
+    "docs/real-file-french-english-smoke-test.md",
+    "S2STranslate/ContentView.swift",
+    "S2STranslate/AVAudioPlaybackSink.swift",
+    "S2STranslate/StreamingHibikiInference.swift",
+    "Tests/S2STranslateCoreTests/AVAudioPlaybackSinkTests.swift",
+    "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift"
+  ],
+  "uncertain": []
+}
