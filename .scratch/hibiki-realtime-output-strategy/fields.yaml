@@ -1,0 +1,37 @@
+field_categories:
+  - category: basic_info
+    fields:
+      - name: item_name
+        required: true
+      - name: research_focus
+        required: true
+      - name: summary
+        required: true
+  - category: technical_features
+    fields:
+      - name: relevant_primary_sources
+        required: true
+      - name: local_code_or_docs_to_check
+        required: true
+      - name: implementation_implications
+        required: true
+  - category: performance_metrics
+    fields:
+      - name: realtime_budget_impact
+        required: true
+      - name: measurement_plan
+        required: true
+      - name: expected_signal
+        required: true
+  - category: milestone_significance
+    fields:
+      - name: recommended_next_step
+        required: true
+      - name: acceptance_criteria
+        required: true
+      - name: risks
+        required: true
+      - name: open_questions
+        required: true
+      - name: sources
+        required: true

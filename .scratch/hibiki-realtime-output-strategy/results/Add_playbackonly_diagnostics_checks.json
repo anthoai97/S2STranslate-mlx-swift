@@ -1,0 +1,163 @@
+{
+  "item_name": "Add playback-only diagnostics checks",
+  "research_focus": "Isolate AVAudio scheduling health from model starvation by replaying already-generated Decoded Audio Chunks and deterministic 24 kHz mono Float32 PCM through the existing Playback Sink boundary on device.",
+  "summary": "The recommended check is a device-only playback probe that reuses `PlaybackSink` and `AVAudioPlaybackSink` instead of creating a separate audio path. It should run two inputs: already-generated decoded chunks and synthetic 24 kHz mono Float32 PCM, then classify the result from existing playback diagnostics plus route and interruption notifications. This will let the app prove a simple distinction: if playback-only runs stay healthy while model-backed live runs underrun below realtime, the dominant problem is model starvation rather than AVAudio scheduling.",
+  "relevant_primary_sources": [
+    {
+      "title": "Apple Developer Documentation: scheduleBuffer(_:completionCallbackType:completionHandler:)",
+      "url": "https://developer.apple.com/documentation/avfaudio/avaudioplayernode/schedulebuffer%28_%3Acompletioncallbacktype%3Acompletionhandler%3A%29",
+      "why_it_matters": "Apple documents that the callback type is selectable. For diagnostics, this is important because the default completion handler is not the same signal as device playback completion."
+    },
+    {
+      "title": "Apple Developer Documentation: AVAudioPlayerNodeCompletionCallbackType.dataPlayedBack",
+      "url": "https://developer.apple.com/documentation/avfaudio/avaudioplayernodecompletioncallbacktype/dataplayedback",
+      "why_it_matters": "Apple defines a callback that corresponds to data finishing in the playback device. That is the best fit for a playback-health diagnostic counter."
+    },
+    {
+      "title": "Apple Audio Session Programming Guide: Responding to Interruptions",
+      "url": "https://developer.apple.com/library/archive/documentation/Audio/Conceptual/AudioSessionProgrammingGuide/HandlingAudioInterruptions/HandlingAudioInterruptions.html",
+      "why_it_matters": "Interruptions immediately stop audio and require explicit recovery logic. Playback-only diagnostics should record these events separately so they are not misread as model starvation."
+    },
+    {
+      "title": "Apple Audio Session Programming Guide: Responding to Route Changes",
+      "url": "https://developer.apple.com/library/archive/documentation/Audio/Conceptual/AudioSessionProgrammingGuide/HandlingAudioHardwareRouteChanges/HandlingAudioHardwareRouteChanges.html",
+      "why_it_matters": "Route changes are expected playback hazards for headset unplug, Bluetooth changes, and output changes. A playback-only health check should log route-change reasons beside the audio metrics."
+    },
+    {
+      "title": "Apple Developer Documentation: Performing offline audio processing",
+      "url": "https://developer.apple.com/documentation/avfaudio/performing-offline-audio-processing",
+      "why_it_matters": "Apple notes that offline manual rendering does not use the live audio device path. It is useful for non-device processing, but it cannot validate AVAudio scheduling health or CoreAudio playback warnings."
+    }
+  ],
+  "local_code_or_docs_to_check": [
+    {
+      "path": "S2STranslate/AVAudioPlaybackSink.swift",
+      "why": "This is the real device playback seam. It already tracks scheduled samples, completed samples, pending duration, schedule gap, and underrun count."
+    },
+    {
+      "path": "S2STranslate/StreamingMimiDecode.swift",
+      "why": "This defines `PlaybackDiagnosticsSnapshot` emission through `playbackDiagnosticsEvent(from:)`, which the playback-only probe should reuse instead of inventing a new metric model."
+    },
+    {
+      "path": "S2STranslate/ExperimentSession.swift",
+      "why": "This is where playback diagnostics become `ExperimentObservations`, so a diagnostic result can be surfaced without a large new UI surface."
+    },
+    {
+      "path": "Tests/S2STranslateCoreTests/AVAudioPlaybackSinkTests.swift",
+      "why": "These tests already prove the seam shape and buffered-streaming behavior. They are the closest place to add non-device regression coverage for the new probe logic."
+    },
+    {
+      "path": "docs/real-file-french-english-smoke-test.md",
+      "why": "This doc already distinguishes model-flow benchmarking from AVAudio playback and is the right place to add a playback-only device checklist."
+    },
+    {
+      "path": ".scratch/hibiki-realtime-output-strategy/PRD.md",
+      "why": "The PRD explicitly requires playback-only diagnostics that reuse the same Playback Sink boundary and synthetic PCM checks."
+    }
+  ],
+  "implementation_implications": [
+    "Add one opt-in device-only playback diagnostic entry point that reuses `PlaybackSink` and runs with `AVAudioPlaybackSink`.",
+    "Run two input classes through the same sink: already-generated `DecodedAudioChunk` values and deterministic synthetic 24 kHz mono Float32 chunks.",
+    "Keep the synthetic chunk cadence aligned with the existing pipeline frame size: 80 ms per chunk at 24 kHz equals 1,920 samples per chunk.",
+    "Record route-change, interruption, and media-services-reset notifications during the probe and attach them to the diagnostic output so AVAudio environment failures are separated from starvation.",
+    "For diagnostic accuracy, introduce a device-played completion signal in the AVAudio path by using `scheduleBuffer(_:completionCallbackType:completionHandler:)` with `.dataPlayedBack`, or by adding a separate diagnostics-only counter with that callback type.",
+    "Do not use offline manual rendering as proof of playback health because it bypasses the live output device path that the diagnostic needs to validate.",
+    "Keep the live model benchmark separate from the playback-only probe; the point of this check is classification, not throughput measurement."
+  ],
+  "realtime_budget_impact": "This adds almost no model-time cost because it removes MLX, Mimi, and Hibiki from the critical path. Deferred playback-only runs cost roughly the audio duration plus setup overhead, and paced synthetic runs cost roughly audio duration plus the chosen prebuffer. The main budget value is diagnostic classification: a passing playback-only run means sub-realtime model production remains the primary reason for live underruns.",
+  "measurement_plan": [
+    "Probe A: replay already-generated `DecodedAudioChunk` values through `AVAudioPlaybackSink` as a fully buffered run so model production speed is not part of the result.",
+    "Probe B: generate 5 to 10 seconds of synthetic 24 kHz mono Float32 PCM, split into 80 ms chunks, and replay it through the same sink in deferred mode.",
+    "Probe C: run the same synthetic PCM through `BufferedStreamingAudioPlaybackSink` with a small prebuffer such as 0.5 to 1.0 seconds while the producer sends 80 ms chunks faster than realtime, for example every 20 to 40 ms, so the queue should stay positive if AVAudio scheduling is healthy.",
+    "During each probe, collect `scheduledBufferCount`, `completedBufferCount`, `pendingBufferCount`, `scheduledSampleCount`, `completedSampleCount`, `pendingSampleCount`, `pendingDurationMilliseconds`, `lastScheduleGapMilliseconds`, `underrunCount`, and `elapsedMilliseconds` from `PlaybackDiagnosticsSnapshot`.",
+    "Also collect route changes, interruptions, media-services-reset notifications, thrown playback errors, and any CoreAudio warnings seen during the same run window.",
+    "Compare the playback-only results with a model-backed live run. If playback-only remains healthy while the live run drains pending duration to zero and increments underruns below realtime, classify the live issue as model starvation."
+  ],
+  "expected_signal": [
+    "Healthy AVAudio path: playback-only probes complete without thrown playback errors, `underrunCount` stays at 0, and pending duration does not collapse to zero until the normal end of playback.",
+    "Healthy AVAudio but starved model path: playback-only probes pass, but the model-backed live path shows pending duration draining after prebuffer and repeated queue-empty events as new 80 ms chunks arrive slower than playback consumes them.",
+    "Unhealthy AVAudio path: playback-only probes also underrun, stall, or fail on a stable route even though their producer is not sub-realtime.",
+    "Environment-caused failure: route-change or interruption events occur during the probe and line up with a failure or queue reset, which should be reported separately from steady-state scheduling health.",
+    "More accurate completion accounting: once device-played completion is used for diagnostics, completed duration should lag scheduled duration until the device really plays the audio instead of appearing complete too early."
+  ],
+  "recommended_next_step": "Add a guarded device test or debug action that replays saved `DecodedAudioChunk` output and synthetic 24 kHz mono Float32 sine chunks through `AVAudioPlaybackSink`, records existing playback diagnostics plus route and interruption events, and emits a simple classification such as `healthy`, `environment-interrupted`, or `unhealthy`.",
+  "acceptance_criteria": [
+    "The playback-only diagnostic reuses the same `PlaybackSink` boundary as production playback.",
+    "A device replay of already-generated chunks completes on a stable audio route with `underrunCount == 0`.",
+    "A deferred replay of synthetic 24 kHz mono Float32 chunks completes on a stable audio route with `underrunCount == 0`.",
+    "A paced synthetic replay with prebuffer and a producer faster than realtime keeps positive pending duration until near normal completion and does not increment underruns.",
+    "The diagnostic output includes scheduled, completed, and pending duration or sample counts, last schedule gap, underrun count, and environment events.",
+    "Completed-playback metrics are based on device-played completion semantics rather than only the default render-thread scheduling callback.",
+    "When playback-only passes but a model-backed live run underruns below realtime, the result is reported as model starvation rather than AVAudio playback failure."
+  ],
+  "risks": [
+    "The current `scheduleBuffer(buffer) { ... }` callback semantics can make completed playback look healthier than it really is, because the default callback is not the same as device-played completion.",
+    "A fully buffered replay can prove route and scheduling health, but by itself it will not expose live pacing bugs; that is why the faster-than-realtime paced synthetic probe is also needed.",
+    "Device audio behavior still varies across speakers, headphones, Bluetooth routes, backgrounding, and interruptions, so a clean playback-only result should be recorded with route context.",
+    "Synthetic sine-wave PCM can validate scheduling and format handling, but it may not expose every artifact that real decoded speech does; replaying already-generated chunks is still necessary."
+  ],
+  "open_questions": [
+    "Should the diagnostic live as a guarded `swift test` similar to the existing smoke tests, or as an in-app debug action for quicker device iteration?",
+    "What is the preferred source for already-generated chunks: in-memory captured `DecodedAudioChunk` values, a fixture file re-decoded into chunks, or a saved WAV converted back into chunk boundaries?",
+    "Do we want two completion counters in diagnostics, one for render completion and one for device-played completion, or is a single device-played counter enough?",
+    "What threshold for `lastScheduleGapMilliseconds` should count as unhealthy on target devices once enough probe data has been collected?"
+  ],
+  "sources": [
+    {
+      "title": "Apple Developer Documentation: scheduleBuffer(_:completionCallbackType:completionHandler:)",
+      "url": "https://developer.apple.com/documentation/avfaudio/avaudioplayernode/schedulebuffer%28_%3Acompletioncallbacktype%3Acompletionhandler%3A%29",
+      "type": "official"
+    },
+    {
+      "title": "Apple Developer Documentation: AVAudioPlayerNodeCompletionCallbackType.dataPlayedBack",
+      "url": "https://developer.apple.com/documentation/avfaudio/avaudioplayernodecompletioncallbacktype/dataplayedback",
+      "type": "official"
+    },
+    {
+      "title": "Apple Developer Documentation: prepare(withFrameCount:)",
+      "url": "https://developer.apple.com/documentation/avfaudio/avaudioplayernode/prepare%28withframecount%3A%29",
+      "type": "official"
+    },
+    {
+      "title": "Apple Developer Documentation: Performing offline audio processing",
+      "url": "https://developer.apple.com/documentation/avfaudio/performing-offline-audio-processing",
+      "type": "official"
+    },
+    {
+      "title": "Apple Audio Session Programming Guide: Responding to Interruptions",
+      "url": "https://developer.apple.com/library/archive/documentation/Audio/Conceptual/AudioSessionProgrammingGuide/HandlingAudioInterruptions/HandlingAudioInterruptions.html",
+      "type": "official"
+    },
+    {
+      "title": "Apple Audio Session Programming Guide: Responding to Route Changes",
+      "url": "https://developer.apple.com/library/archive/documentation/Audio/Conceptual/AudioSessionProgrammingGuide/HandlingAudioHardwareRouteChanges/HandlingAudioHardwareRouteChanges.html",
+      "type": "official"
+    },
+    {
+      "title": "Stack Overflow: Timing issues: Metronome using AVAudioEngine scheduleBuffer's completion handler",
+      "url": "https://stackoverflow.com/questions/67341908/timing-issues-metronome-using-avaudioengine-schedulebuffers-completion-handler",
+      "type": "community"
+    },
+    {
+      "title": "AudioKit issue #2910: player did not see an IO cycle",
+      "url": "https://github.com/AudioKit/AudioKit/issues/2910",
+      "type": "community"
+    },
+    {
+      "title": "S2STranslate local source: S2STranslate/AVAudioPlaybackSink.swift",
+      "url": "file://S2STranslate/AVAudioPlaybackSink.swift",
+      "type": "local"
+    },
+    {
+      "title": "S2STranslate local source: docs/real-file-french-english-smoke-test.md",
+      "url": "file://docs/real-file-french-english-smoke-test.md",
+      "type": "local"
+    },
+    {
+      "title": "S2STranslate local source: .scratch/hibiki-realtime-output-strategy/PRD.md",
+      "url": "file://.scratch/hibiki-realtime-output-strategy/PRD.md",
+      "type": "local"
+    }
+  ],
+  "uncertain": []
+}

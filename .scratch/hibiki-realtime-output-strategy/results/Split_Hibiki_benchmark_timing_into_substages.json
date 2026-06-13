@@ -1,0 +1,244 @@
+{
+  "item_name": "Split Hibiki benchmark timing into substages",
+  "research_focus": "Add profiler-grade timing inside the real MLX Hibiki step so the benchmark separates state bookkeeping, main transformer evaluation, text-logit extraction and sampling, Depformer slice evaluation, Depformer logit extraction and sampling, generated-token state writes, and final Swift output or token-frame construction.",
+  "summary": "The current benchmark measures `inference.step(sourceAudioTokens:)` as one 328.986 ms average bucket, but the real call path spans multiple distinct stages: sequence-state reads and writes in `MLXHibikiDefaultRuntimeEngine.step`, `model.mainStep(...)`, one text-logit `asArray(Float.self)` read, `model.sampleDepformer(...)`, repeated per-slice `logits.asArray(Float.self)` reads, and final `HibikiTextOutput` plus `MimiTokenFrame` construction in `MLXHibikiInferenceSession.step`. The most important measurement rule is to place explicit `MLX.eval(...)` boundaries before any Swift-side `asArray(...)` extraction, because MLX is lazy and `asArray(...)` itself calls `self.eval()` before copying bytes into a Swift array. That split will let the benchmark show whether the 80 ms per-frame budget is mainly lost in MLX compute, repeated GPU-to-CPU extraction, CPU sampling, or state and token-frame bookkeeping.",
+  "relevant_primary_sources": [
+    {
+      "kind": "local_code",
+      "reference": "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift:343-464",
+      "why_it_matters": "Shows the benchmark currently wraps the entire Hibiki step in one timer and reports only coarse stage summaries."
+    },
+    {
+      "kind": "local_code",
+      "reference": "S2STranslate/MLXHibikiRuntime.swift:182-233",
+      "why_it_matters": "Shows the real Hibiki engine step order: state store, delayed token lookup, main step, text sampling, Depformer sampling, and generated-token state updates."
+    },
+    {
+      "kind": "local_code",
+      "reference": "S2STranslate/MLXHibikiRuntime.swift:293-342",
+      "why_it_matters": "Shows the session-level work after engine.step: frame index mutation, text decoding, and generated `MimiTokenFrame` creation."
+    },
+    {
+      "kind": "local_code",
+      "reference": "S2STranslate/MLXHibikiModel.swift:166-225",
+      "why_it_matters": "Shows `mainStep(...)` and the per-slice Depformer loop, including repeated `logits.asArray(Float.self)` calls."
+    },
+    {
+      "kind": "local_dependency_source",
+      "reference": ".build/checkouts/mlx-swift/Source/MLX/MLXArray+Bytes.swift:123-136",
+      "why_it_matters": "Confirms `asArray(...)` forces `self.eval()` and then copies data into a Swift array."
+    },
+    {
+      "kind": "local_dependency_source",
+      "reference": ".build/checkouts/mlx-swift/Source/MLX/Transforms+Eval.swift:10-23 and .build/checkouts/mlx-swift/Source/Cmlx/mlx/mlx/transforms.cpp:257-269",
+      "why_it_matters": "Confirms `MLX.eval(...)` is the explicit evaluation boundary and waits for scheduled outputs."
+    },
+    {
+      "kind": "official_doc",
+      "reference": "https://ml-explore.github.io/mlx/build/html/usage/quick_start.html",
+      "why_it_matters": "Documents that MLX operations are lazy and that `item()` or array conversion trigger evaluation."
+    },
+    {
+      "kind": "official_doc",
+      "reference": "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html",
+      "why_it_matters": "Documents evaluation trade-offs and warns against over-fragmenting the graph with too many eval calls."
+    },
+    {
+      "kind": "official_doc",
+      "reference": "https://ml-explore.github.io/mlx/build/html/python/devices_and_streams.html",
+      "why_it_matters": "Defines stream synchronization semantics for any future async profiling path."
+    },
+    {
+      "kind": "upstream_issue",
+      "reference": "https://github.com/ml-explore/mlx-swift-lm/issues/124",
+      "why_it_matters": "Shows upstream Swift inference already treats per-token GPU-to-CPU sync and repeated eval boundaries as real performance risks."
+    }
+  ],
+  "local_code_or_docs_to_check": [
+    "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift:343-464",
+    "S2STranslate/MLXHibikiRuntime.swift:182-233",
+    "S2STranslate/MLXHibikiRuntime.swift:293-342",
+    "S2STranslate/MLXHibikiModel.swift:166-225",
+    ".scratch/real-file-benchmark/latest/benchmark.md",
+    "docs/hibiki-mlx-porting-notes.md",
+    ".build/checkouts/mlx-swift/Source/MLX/MLXArray+Bytes.swift:123-136",
+    ".build/checkouts/mlx-swift/Source/MLX/MLXArray.swift:502-508",
+    ".build/checkouts/mlx-swift/Source/MLX/Transforms+Eval.swift:10-23",
+    ".build/checkouts/mlx-swift/Source/MLX/Stream.swift:116-119"
+  ],
+  "implementation_implications": [
+    "Instrument inside `MLXHibikiDefaultRuntimeEngine.step(...)` and `MLXHibikiInferenceSession.step(...)`, not only around `inference.step(...)` in the benchmark harness, because the current top-level timer cannot see state prep versus MLX work versus Swift output work.",
+    "Add explicit evaluation boundaries before Swift extraction. For the text path, evaluate `mainOutput.transformerOutput` and `mainOutput.textLogits` together, then time `mainOutput.textLogits.asArray(Float.self)` separately. For the Depformer path, evaluate each slice `logits` before timing `logits.asArray(Float.self)`.",
+    "Keep `asArray(...)` timing separate from CPU sampling timing. Today `tokenSampler.sample(logits: mainOutput.textLogits.asArray(Float.self), ...)` folds MLX evaluation, byte copy, and CPU top-k or softmax work into one number.",
+    "Aggregate Depformer timings by category first: `depformerEvalMs`, `depformerLogitsExtractMs`, and `depformerSamplingCpuMs`. Optionally add per-slice arrays later if the aggregate still hides a skewed first-slice or late-slice hotspot.",
+    "Track session-level bookkeeping separately: `frameIndexLockMs`, `generatedTokenStateWriteMs`, and `tokenFrameCreationMs`. Those are unlikely to explain 329 ms alone, but the split is useful for proving they are not the main bottleneck.",
+    "Do not add `Stream.synchronize()` in the blocking `MLX.eval(...)` path unless profiling switches to `asyncEval(...)`. The pinned MLX C++ implementation shows `eval(...)` already waits for outputs."
+  ],
+  "realtime_budget_impact": {
+    "current_hibiki_step_average_ms": 328.986,
+    "current_mimi_encode_average_ms": 21.846,
+    "current_mimi_decode_average_ms": 22.044,
+    "current_measured_pipeline_stage_sum_ms": 372.876,
+    "frame_budget_ms_at_12_5_hz": 80.0,
+    "hibiki_step_vs_budget_ratio": "4.11x the full per-frame budget",
+    "pipeline_stage_sum_vs_budget_ratio": "4.66x the full per-frame budget",
+    "why_the_split_matters": "Without substage timing, an optimization to a small CPU bookkeeping path can look active while the real regression remains hidden inside MLX compute or repeated GPU-to-CPU extraction."
+  },
+  "measurement_plan": {
+    "instrumentation_location": "Add a benchmark-only breakdown object that is populated inside `MLXHibikiDefaultRuntimeEngine.step(...)` and `MLXHibikiInferenceSession.step(...)`, then surfaced through `RealFileModelFlowBenchmarkReport` beside the existing coarse `hibikiStepMilliseconds` summary.",
+    "timers": [
+      {
+        "name": "hibikiFrameIndexLockMs",
+        "where": "Around the `state.withLock` block in `MLXHibikiInferenceSession.step(...)` that reads configuration and increments `nextFrameIndex`.",
+        "captures": "Session mutex and frame-index bookkeeping before engine work starts."
+      },
+      {
+        "name": "hibikiSourceStateStoreMs",
+        "where": "Around `sequenceState.storeSourceTokens(...)` in `MLXHibikiDefaultRuntimeEngine.step(...)`.",
+        "captures": "Insertion of source Mimi tokens into delayed state."
+      },
+      {
+        "name": "hibikiMainInputLookupMs",
+        "where": "Around `textTokenForMainStep(...)` and `audioTokensForMainStep(...)`.",
+        "captures": "Delayed text and audio token lookup for the main transformer input."
+      },
+      {
+        "name": "hibikiMainTransformerEvalMs",
+        "where": "Build `mainOutput = model.mainStep(...)`, then time `MLX.eval(mainOutput.transformerOutput, mainOutput.textLogits)`.",
+        "captures": "Main transformer compute, output norm, and text head evaluation without Swift extraction cost."
+      },
+      {
+        "name": "hibikiTextLogitsExtractMs",
+        "where": "After `hibikiMainTransformerEvalMs`, time `mainOutput.textLogits.asArray(Float.self)`.",
+        "captures": "Swift array extraction and memory copy for text logits only."
+      },
+      {
+        "name": "hibikiTextSamplingCpuMs",
+        "where": "Time `tokenSampler.sample(...)` after the Swift logits array already exists.",
+        "captures": "Pure CPU top-k ranking, temperature scaling, and sample selection."
+      },
+      {
+        "name": "hibikiDepformerEvalMs",
+        "where": "Inside `model.sampleDepformer(...)`, for each slice time `MLX.eval(logits)` after `linearIn + embedding + transformer + norm + linearOut` produce the slice logits, then accumulate.",
+        "captures": "Aggregate MLX compute for Depformer slice logits across the full generated-codebook loop."
+      },
+      {
+        "name": "hibikiDepformerLogitsExtractMs",
+        "where": "Inside each slice, after `MLX.eval(logits)`, time `logits.asArray(Float.self)` and accumulate.",
+        "captures": "Aggregate GPU-to-CPU extraction and Swift array copy for Depformer logits."
+      },
+      {
+        "name": "hibikiDepformerSamplingCpuMs",
+        "where": "Inside each slice, time `sampler.sample(...)` after the Swift logits array already exists and accumulate.",
+        "captures": "Aggregate CPU sampling across all generated audio codebooks."
+      },
+      {
+        "name": "hibikiGeneratedStateWriteMs",
+        "where": "Around `sequenceState.storeGeneratedTokens(...)`.",
+        "captures": "Write-back of sampled text and generated audio tokens into delayed state."
+      },
+      {
+        "name": "hibikiTokenFrameCreationMs",
+        "where": "In `MLXHibikiInferenceSession.step(...)`, time `HibikiTextOutput(...)`, `textTokenDecoder?.piece(for:)`, and `MimiTokenFrame(...)` creation after `engine.step(...)` returns.",
+        "captures": "Swift object construction and final step packaging."
+      },
+      {
+        "name": "hibikiAccountedMs",
+        "where": "Sum of all substage timers per step.",
+        "captures": "Accounted time that can be compared with the existing coarse `hibikiStepMilliseconds` timer."
+      },
+      {
+        "name": "hibikiUnaccountedMs",
+        "where": "Existing coarse Hibiki step wall time minus `hibikiAccountedMs`.",
+        "captures": "Instrumentation gaps or extra async work that leaked across stage boundaries."
+      }
+    ],
+    "reporting_rules": [
+      "Keep the existing coarse `hibikiStepMilliseconds` summary for continuity and add a second table for Hibiki substages.",
+      "Report count, average, p50, p95, and max for every substage, matching the current benchmark summary format.",
+      "For Depformer, also report `sliceCountPerStep = depformerLogitsExtractCount / hibikiStepCount` so the benchmark confirms expected per-step multiplicity."
+    ],
+    "boundary_rules": [
+      "Do not time `model.mainStep(...)` alone as compute because it mainly builds lazy MLX arrays. Close the compute window with `MLX.eval(...)`.",
+      "Do not time `asArray(...)` without a preceding explicit `MLX.eval(...)` if the goal is to distinguish compute from extraction; `asArray(...)` otherwise includes both.",
+      "Only use `Stream.synchronize()` if a later profiling experiment switches to `asyncEval(...)` or custom streams."
+    ]
+  },
+  "expected_signal": [
+    "The split will show whether the current 328.986 ms average is dominated by main-transformer evaluation, aggregate Depformer evaluation, repeated logits extraction, or CPU sampling.",
+    "If GPU-to-CPU extraction is a major cost, `hibikiTextLogitsExtractMs + hibikiDepformerLogitsExtractMs` will be large even when `hibikiTextSamplingCpuMs` and `hibikiDepformerSamplingCpuMs` stay relatively small.",
+    "If model compute is the real bottleneck, `hibikiMainTransformerEvalMs` and or `hibikiDepformerEvalMs` will absorb most of the coarse Hibiki timer while extraction and bookkeeping remain minor.",
+    "If the accounted sum does not closely match the current coarse timer, the remaining gap will identify missing work such as implicit evaluation, object packaging outside the measured window, or benchmark-harness overhead."
+  ],
+  "recommended_next_step": "Implement the timer breakdown in the real-file benchmark path first, with explicit `MLX.eval(...)` boundaries and aggregated Depformer timers, then rerun the existing 40-source-chunk benchmark that produced the 328.986 ms baseline so the before or after comparison stays apples-to-apples.",
+  "acceptance_criteria": [
+    "The benchmark JSON and markdown include a dedicated Hibiki substage table in addition to the existing coarse stage table.",
+    "The new timers isolate at least these categories: main transformer evaluation, text logits extraction, text sampling CPU, Depformer evaluation, Depformer logits extraction, Depformer sampling CPU, state updates, and token-frame creation.",
+    "The sum of Hibiki substages stays within 5 percent of the existing coarse Hibiki wall time on the same benchmark run, with any gap exposed as `hibikiUnaccountedMs`.",
+    "The report makes it obvious which single Hibiki substage has the highest average and p95 latency, so optimization work can target one measured bottleneck instead of the entire 329 ms bucket."
+  ],
+  "risks": [
+    "Extra profiling boundaries can perturb MLX scheduling. Adding many `MLX.eval(...)` calls may slightly change absolute latency, so the substage split should be benchmark-only or guarded by a profiling flag.",
+    "Per-slice Depformer timers create more samples and more reporting data. If the raw report becomes noisy, keep the public report aggregated and store per-slice detail only in JSON.",
+    "If future models change the generated codebook count, any fixed-width Depformer table will drift. Use runtime counts derived from the loaded topology instead of hard-coded slice totals.",
+    "If the benchmark continues to use the coarse timer without the accounted-versus-unaccounted check, implicit evaluation can still hide inside the wrong bucket."
+  ],
+  "open_questions": [
+    "[uncertain] Should the first implementation expose only aggregate Depformer timings, or also persist per-slice arrays for all generated codebooks in the JSON output?",
+    "[uncertain] Do we want `textTokenDecoder?.piece(for:)` separated from `HibikiTextOutput` and `MimiTokenFrame` construction, or is one `hibikiTokenFrameCreationMs` bucket enough for the first pass?",
+    "[uncertain] Should the profiling path optionally test `MLX_METAL_FAST_SYNCH=1` in a separate experiment after the substage breakdown lands, since MLX documents it as a lower-latency CPU and GPU synchronization path?"
+  ],
+  "sources": [
+    {
+      "description": "Current benchmark report with 328.986 ms Hibiki average",
+      "location": ".scratch/real-file-benchmark/latest/benchmark.md"
+    },
+    {
+      "description": "Real-file benchmark harness and coarse Hibiki timing",
+      "location": "Tests/S2STranslateCoreTests/RealFileFrenchEnglishSmokeTests.swift:343-464"
+    },
+    {
+      "description": "Hibiki runtime engine step order",
+      "location": "S2STranslate/MLXHibikiRuntime.swift:182-233"
+    },
+    {
+      "description": "Hibiki session output construction",
+      "location": "S2STranslate/MLXHibikiRuntime.swift:293-342"
+    },
+    {
+      "description": "Hibiki model main step and Depformer sampling loop",
+      "location": "S2STranslate/MLXHibikiModel.swift:166-225"
+    },
+    {
+      "description": "MLX Swift `asArray(...)` implementation",
+      "location": ".build/checkouts/mlx-swift/Source/MLX/MLXArray+Bytes.swift:123-136"
+    },
+    {
+      "description": "MLX Swift `eval(...)` wrapper and blocking C++ implementation",
+      "location": ".build/checkouts/mlx-swift/Source/MLX/Transforms+Eval.swift:10-23; .build/checkouts/mlx-swift/Source/Cmlx/mlx/mlx/transforms.cpp:257-269"
+    },
+    {
+      "description": "MLX Quick Start: lazy evaluation and implicit evaluation on read",
+      "location": "https://ml-explore.github.io/mlx/build/html/usage/quick_start.html"
+    },
+    {
+      "description": "MLX Lazy Evaluation guide",
+      "location": "https://ml-explore.github.io/mlx/build/html/usage/lazy_evaluation.html"
+    },
+    {
+      "description": "MLX Devices and Streams reference",
+      "location": "https://ml-explore.github.io/mlx/build/html/python/devices_and_streams.html"
+    },
+    {
+      "description": "MLX Distributed guide note on `MLX_METAL_FAST_SYNCH=1`",
+      "location": "https://ml-explore.github.io/mlx/build/html/usage/distributed.html"
+    },
+    {
+      "description": "Upstream Swift inference performance issue about per-token sync and eval boundaries",
+      "location": "https://github.com/ml-explore/mlx-swift-lm/issues/124"
+    }
+  ],
+  "uncertain": [
+    "open_questions"
+  ]
+}
