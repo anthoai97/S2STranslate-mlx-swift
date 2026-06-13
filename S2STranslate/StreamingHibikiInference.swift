@@ -159,34 +159,101 @@ public struct HibikiTopKTokenSampler: Sendable {
             throw HibikiTokenSamplingError.invalidRandomValue(randomUnit)
         }
 
-        let ranked = logits.enumerated().sorted { lhs, rhs in
-            if lhs.element == rhs.element {
-                return lhs.offset < rhs.offset
-            }
-            return lhs.element > rhs.element
-        }
-        let candidateCount = topK > 0 ? min(topK, ranked.count) : ranked.count
-        let candidates = Array(ranked.prefix(candidateCount))
+        let candidateCount = topK > 0 ? min(topK, logits.count) : logits.count
+        let candidates = Self.topCandidates(logits: logits, limit: candidateCount)
         let candidateTokens = candidates.map(\.offset)
 
         guard temperature > 0 else {
             return HibikiSampledToken(token: candidates[0].offset, candidateTokens: candidateTokens)
         }
 
-        let scaled = candidates.map { Double($0.element) / temperature }
-        let maxScaled = scaled.max() ?? 0
-        let weights = scaled.map { exp($0 - maxScaled) }
-        let totalWeight = weights.reduce(0, +)
+        let maxScaled = candidates.reduce(-Double.infinity) {
+            max($0, Double($1.element) / temperature)
+        }
+        let totalWeight = candidates.reduce(0) {
+            $0 + exp(Double($1.element) / temperature - maxScaled)
+        }
         let threshold = randomUnit * totalWeight
         var cumulative = 0.0
-        for (index, weight) in weights.enumerated() {
+        for candidate in candidates {
+            let weight = exp(Double(candidate.element) / temperature - maxScaled)
             cumulative += weight
             if threshold <= cumulative {
-                return HibikiSampledToken(token: candidates[index].offset, candidateTokens: candidateTokens)
+                return HibikiSampledToken(token: candidate.offset, candidateTokens: candidateTokens)
             }
         }
 
         return HibikiSampledToken(token: candidates[candidates.count - 1].offset, candidateTokens: candidateTokens)
+    }
+
+    private static func topCandidates(logits: [Float], limit: Int) -> [(offset: Int, element: Float)] {
+        guard limit < logits.count, limit <= 64 else {
+            return Array(logits.enumerated().sorted(by: ranksBefore).prefix(limit))
+        }
+
+        var candidates: [(offset: Int, element: Float)] = []
+        candidates.reserveCapacity(limit)
+        for candidate in logits.enumerated() {
+            guard candidates.count == limit else {
+                insert(candidate, into: &candidates)
+                continue
+            }
+            guard ranksBefore(candidate, candidates[candidates.count - 1]) else {
+                continue
+            }
+            candidates.removeLast()
+            insert(candidate, into: &candidates)
+        }
+        return candidates
+    }
+
+    private static func insert(
+        _ candidate: (offset: Int, element: Float),
+        into candidates: inout [(offset: Int, element: Float)]
+    ) {
+        let insertionIndex = candidates.firstIndex { ranksBefore(candidate, $0) } ?? candidates.endIndex
+        candidates.insert(candidate, at: insertionIndex)
+    }
+
+    private static func ranksBefore(
+        _ lhs: (offset: Int, element: Float),
+        _ rhs: (offset: Int, element: Float)
+    ) -> Bool {
+        if lhs.element == rhs.element {
+            return lhs.offset < rhs.offset
+        }
+        return lhs.element > rhs.element
+    }
+}
+
+public struct HibikiInferenceStepTimings: Equatable, Sendable {
+    public var mainTransformerEvaluationMilliseconds: Double
+    public var textLogitsExtractionMilliseconds: Double
+    public var textSamplingMilliseconds: Double
+    public var depformerEvaluationMilliseconds: Double
+    public var depformerLogitsExtractionMilliseconds: Double
+    public var depformerSamplingMilliseconds: Double
+    public var stateCacheUpdateMilliseconds: Double
+    public var generatedFrameConstructionMilliseconds: Double
+
+    nonisolated public init(
+        mainTransformerEvaluationMilliseconds: Double = 0,
+        textLogitsExtractionMilliseconds: Double = 0,
+        textSamplingMilliseconds: Double = 0,
+        depformerEvaluationMilliseconds: Double = 0,
+        depformerLogitsExtractionMilliseconds: Double = 0,
+        depformerSamplingMilliseconds: Double = 0,
+        stateCacheUpdateMilliseconds: Double = 0,
+        generatedFrameConstructionMilliseconds: Double = 0
+    ) {
+        self.mainTransformerEvaluationMilliseconds = mainTransformerEvaluationMilliseconds
+        self.textLogitsExtractionMilliseconds = textLogitsExtractionMilliseconds
+        self.textSamplingMilliseconds = textSamplingMilliseconds
+        self.depformerEvaluationMilliseconds = depformerEvaluationMilliseconds
+        self.depformerLogitsExtractionMilliseconds = depformerLogitsExtractionMilliseconds
+        self.depformerSamplingMilliseconds = depformerSamplingMilliseconds
+        self.stateCacheUpdateMilliseconds = stateCacheUpdateMilliseconds
+        self.generatedFrameConstructionMilliseconds = generatedFrameConstructionMilliseconds
     }
 }
 
@@ -195,17 +262,20 @@ public struct HibikiInferenceStep: Equatable, Sendable {
     public var sourceAudioTokens: MimiTokenFrame
     public var text: HibikiTextOutput
     public var generatedAudioTokens: MimiTokenFrame
+    public var timings: HibikiInferenceStepTimings?
 
     nonisolated public init(
         frameIndex: Int,
         sourceAudioTokens: MimiTokenFrame,
         text: HibikiTextOutput,
-        generatedAudioTokens: MimiTokenFrame
+        generatedAudioTokens: MimiTokenFrame,
+        timings: HibikiInferenceStepTimings? = nil
     ) {
         self.frameIndex = frameIndex
         self.sourceAudioTokens = sourceAudioTokens
         self.text = text
         self.generatedAudioTokens = generatedAudioTokens
+        self.timings = timings
     }
 
     public var referenceTraceEvent: ReferenceTraceEvent {
@@ -592,20 +662,25 @@ public struct HibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
 
 public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sendable {
     public typealias MimiRuntimeLoader = @Sendable (PreparedModelArtifacts) throws -> MLXMimiRuntime
+    public typealias PlaybackRouteProvider = @Sendable () -> RealtimePlaybackRoute
 
     private let artifactPreparer: ModelArtifactPreparer
     private let source: any AudioInputSource
     private let inferenceSession: any HibikiInferenceSession
-    private let playbackSink: any PlaybackSink
+    private let playbackSink: (any PlaybackSink)?
+    private let outputStrategy: RealtimeOutputStrategyDecision?
+    private let playbackRouteProvider: PlaybackRouteProvider?
     private let generationConfiguration: HibikiGenerationConfiguration
     private let mimiRuntimeLoader: MimiRuntimeLoader
     private let components = RealFileHibikiTranslationComponentStore()
+    private let activePlaybackSink = ActivePlaybackSinkStore()
 
     public init(
         artifactPreparer: ModelArtifactPreparer,
         audioSource: any AudioInputSource,
         inferenceSession: any HibikiInferenceSession = MLXHibikiInferenceSession(),
         playbackSink: any PlaybackSink,
+        outputStrategy: RealtimeOutputStrategyDecision? = nil,
         generationConfiguration: HibikiGenerationConfiguration = HibikiGenerationConfiguration(),
         mimiRuntimeLoader: @escaping MimiRuntimeLoader = { artifacts in
             try MLXMimiRuntimeLoader().load(from: artifacts)
@@ -615,6 +690,28 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
         self.source = audioSource
         self.inferenceSession = inferenceSession
         self.playbackSink = playbackSink
+        self.outputStrategy = outputStrategy
+        self.playbackRouteProvider = nil
+        self.generationConfiguration = generationConfiguration
+        self.mimiRuntimeLoader = mimiRuntimeLoader
+    }
+
+    public init(
+        artifactPreparer: ModelArtifactPreparer,
+        audioSource: any AudioInputSource,
+        inferenceSession: any HibikiInferenceSession = MLXHibikiInferenceSession(),
+        playbackRouteProvider: @escaping PlaybackRouteProvider,
+        generationConfiguration: HibikiGenerationConfiguration = HibikiGenerationConfiguration(),
+        mimiRuntimeLoader: @escaping MimiRuntimeLoader = { artifacts in
+            try MLXMimiRuntimeLoader().load(from: artifacts)
+        }
+    ) {
+        self.artifactPreparer = artifactPreparer
+        self.source = audioSource
+        self.inferenceSession = inferenceSession
+        self.playbackSink = nil
+        self.outputStrategy = nil
+        self.playbackRouteProvider = playbackRouteProvider
         self.generationConfiguration = generationConfiguration
         self.mimiRuntimeLoader = mimiRuntimeLoader
     }
@@ -740,6 +837,21 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
         hibikiBackendLogger.info("real-file run begin")
         let encoder = prepared.encoder
         let decoder = prepared.decoder
+        let playbackRoute = playbackRouteProvider?()
+        let playbackSink: any PlaybackSink
+        if let routeSink = playbackRoute?.playbackSink {
+            playbackSink = routeSink
+        } else if let configuredSink = self.playbackSink {
+            playbackSink = configuredSink
+        } else {
+            let event = ExperimentEvent.failure(PlaybackSinkError.stopped.userVisibleMessage)
+            if let sendEvent {
+                await sendEvent(event)
+            }
+            return [event]
+        }
+        let outputStrategy = playbackRoute?.decision ?? self.outputStrategy
+        activePlaybackSink.store(playbackSink)
         source.reset()
         encoder.reset()
         decoder.reset()
@@ -762,6 +874,9 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
         await emit(.audioInput(.streamStarted(sampleRate: audioDescription.sampleRate)))
         await emit(.mimiEncode(.streamStarted(encoderDescription)))
         await emit(.mimiDecode(.streamStarted(decoderDescription)))
+        if let outputStrategy {
+            await emit(.outputStrategy(outputStrategy))
+        }
 
         do {
             let playbackStartStartedAt = Date()
@@ -852,7 +967,25 @@ public struct RealFileHibikiTranslationExperimentBackend: ExperimentBackend, Sen
         source.stop()
         inferenceSession.reset()
         components.reset()
-        playbackSink.stop()
+        activePlaybackSink.stop()
+        playbackSink?.stop()
+    }
+}
+
+private final class ActivePlaybackSinkStore: @unchecked Sendable {
+    private let sink = Mutex<(any PlaybackSink)?>(nil)
+
+    func store(_ newSink: any PlaybackSink) {
+        sink.withLock { sink in
+            sink = newSink
+        }
+    }
+
+    func stop() {
+        sink.withLock { sink in
+            sink?.stop()
+            sink = nil
+        }
     }
 }
 

@@ -96,6 +96,8 @@ public final class ExperimentSession: ObservableObject {
             observations.recordMimiDecode(event)
         case let .playback(event):
             observations.recordPlayback(event)
+        case let .outputStrategy(decision):
+            observations.recordOutputStrategy(decision)
         case let .hibikiInference(event):
             observations.recordHibikiInference(event)
         case .ready:
@@ -164,6 +166,11 @@ public struct ExperimentObservations: Equatable {
     public var playbackPendingDurationMilliseconds: Double
     public var playbackScheduleGapMilliseconds: Double?
     public var playbackUnderrunCount: Int
+    public var generatedRealtimeFactor: Double?
+    public var realtimeCapabilityClass: String
+    public var outputStrategyName: String
+    public var outputStrategyReason: String
+    public var outputStrategySummary: String
     public var hibikiInferenceStatus: String
     public var hibikiStepCount: Int
     public var hibikiTextTokenCount: Int
@@ -206,6 +213,11 @@ public struct ExperimentObservations: Equatable {
         playbackPendingDurationMilliseconds: Double = 0,
         playbackScheduleGapMilliseconds: Double? = nil,
         playbackUnderrunCount: Int = 0,
+        generatedRealtimeFactor: Double? = nil,
+        realtimeCapabilityClass: String = "n/a",
+        outputStrategyName: String = "n/a",
+        outputStrategyReason: String = "n/a",
+        outputStrategySummary: String = "n/a",
         hibikiInferenceStatus: String = "idle",
         hibikiStepCount: Int = 0,
         hibikiTextTokenCount: Int = 0,
@@ -247,6 +259,11 @@ public struct ExperimentObservations: Equatable {
         self.playbackPendingDurationMilliseconds = playbackPendingDurationMilliseconds
         self.playbackScheduleGapMilliseconds = playbackScheduleGapMilliseconds
         self.playbackUnderrunCount = playbackUnderrunCount
+        self.generatedRealtimeFactor = generatedRealtimeFactor
+        self.realtimeCapabilityClass = realtimeCapabilityClass
+        self.outputStrategyName = outputStrategyName
+        self.outputStrategyReason = outputStrategyReason
+        self.outputStrategySummary = outputStrategySummary
         self.hibikiInferenceStatus = hibikiInferenceStatus
         self.hibikiStepCount = hibikiStepCount
         self.hibikiTextTokenCount = hibikiTextTokenCount
@@ -358,6 +375,14 @@ public struct ExperimentObservations: Equatable {
         }
     }
 
+    mutating func recordOutputStrategy(_ decision: RealtimeOutputStrategyDecision) {
+        generatedRealtimeFactor = decision.generatedRealtimeFactor
+        realtimeCapabilityClass = decision.capability?.displayName ?? "n/a"
+        outputStrategyName = decision.strategy.displayName
+        outputStrategyReason = decision.reason
+        outputStrategySummary = decision.summary
+    }
+
     mutating func recordHibikiInference(_ event: HibikiInferenceEvent) {
         switch event {
         case let .streamStarted(description):
@@ -438,6 +463,7 @@ public enum ExperimentEvent: Equatable, Sendable {
     case mimiEncode(MimiEncodeEvent)
     case mimiDecode(MimiDecodeEvent)
     case playback(PlaybackEvent)
+    case outputStrategy(RealtimeOutputStrategyDecision)
     case hibikiInference(HibikiInferenceEvent)
     case ready
     case stopped
@@ -459,6 +485,8 @@ public enum ExperimentEvent: Equatable, Sendable {
             "codec:\(event.name)"
         case let .playback(event):
             "playback:\(event.name)"
+        case let .outputStrategy(decision):
+            "outputStrategy:\(decision.strategy.rawValue)"
         case let .hibikiInference(event):
             "hibiki:\(event.name)"
         case .ready:
@@ -472,7 +500,7 @@ public enum ExperimentEvent: Equatable, Sendable {
 
     var shouldLog: Bool {
         switch self {
-        case .ready, .stopped, .failure:
+        case .ready, .stopped, .failure, .outputStrategy:
             true
         case let .audioInput(event):
             event.isStreamBoundary

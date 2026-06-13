@@ -1,3 +1,4 @@
+import Foundation
 import MLX
 
 struct MLXHibikiMainStepOutput {
@@ -7,6 +8,13 @@ struct MLXHibikiMainStepOutput {
 
 struct MLXHibikiDepformerStepOutput {
     let audioTokens: [Int]
+    let timings: MLXHibikiDepformerStepTimings
+}
+
+struct MLXHibikiDepformerStepTimings {
+    var evaluationMilliseconds: Double = 0
+    var logitsExtractionMilliseconds: Double = 0
+    var samplingMilliseconds: Double = 0
 }
 
 final class MLXHibikiEmbedding {
@@ -202,26 +210,39 @@ final class MLXHibikiLanguageModel {
         topK: Int,
         randomUnit: () -> Double
     ) throws -> MLXHibikiDepformerStepOutput {
+        var timings = MLXHibikiDepformerStepTimings()
+        let cacheResetStartedAt = Date()
         MLXMimiProjectedTransformer.resetCache(depformerCache)
+        timings.evaluationMilliseconds += Date().timeIntervalSince(cacheResetStartedAt) * 1000
 
         var lastToken = textToken
         var audioTokens: [Int] = []
         for slice in depformerSlices {
+            let evaluationStartedAt = Date()
             let tokenIDs = MLXArray([Int32(lastToken)]).reshaped([1, 1])
             var x = slice.linearIn(mainTransformerOutput) + slice.embedding(tokenIDs)
             x = slice.transformer(x, cache: depformerCache)
             let logits = slice.linearOut(slice.norm(x))[0..., -1, 0...]
+            eval(logits)
+            timings.evaluationMilliseconds += Date().timeIntervalSince(evaluationStartedAt) * 1000
+
+            let logitsExtractionStartedAt = Date()
+            let logitsArray = logits.asArray(Float.self)
+            timings.logitsExtractionMilliseconds += Date().timeIntervalSince(logitsExtractionStartedAt) * 1000
+
+            let samplingStartedAt = Date()
             let sampled = try sampler.sample(
-                logits: logits.asArray(Float.self),
+                logits: logitsArray,
                 temperature: temperature,
                 topK: topK,
                 randomUnit: randomUnit()
             )
+            timings.samplingMilliseconds += Date().timeIntervalSince(samplingStartedAt) * 1000
             audioTokens.append(sampled.token)
             lastToken = sampled.token
         }
 
-        return MLXHibikiDepformerStepOutput(audioTokens: audioTokens)
+        return MLXHibikiDepformerStepOutput(audioTokens: audioTokens, timings: timings)
     }
 
     func resetCaches() {

@@ -433,6 +433,39 @@ struct MLXHibikiRuntimeTests {
         #expect(session.observations.output == " real real")
     }
 
+    @Test("MLX Hibiki session preserves runtime step timings")
+    func mlxHibikiSessionPreservesRuntimeStepTimings() async throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let timings = HibikiInferenceStepTimings(
+            mainTransformerEvaluationMilliseconds: 40,
+            textLogitsExtractionMilliseconds: 4,
+            textSamplingMilliseconds: 2,
+            depformerEvaluationMilliseconds: 30,
+            depformerLogitsExtractionMilliseconds: 8,
+            depformerSamplingMilliseconds: 6,
+            stateCacheUpdateMilliseconds: 1,
+            generatedFrameConstructionMilliseconds: 0.5
+        )
+        let engine = RecordingHibikiRuntimeEngine(
+            output: MLXHibikiStepOutput(
+                textToken: 801,
+                textPiece: " real",
+                textCandidateTokens: [801, 802],
+                audioTokens: Array(900..<916),
+                timings: timings
+            )
+        )
+        let inference = MLXHibikiInferenceSession(engine: engine)
+        _ = try await inference.initialize(
+            artifacts: artifacts,
+            configuration: HibikiGenerationConfiguration()
+        )
+
+        let step = try await inference.step(sourceAudioTokens: sourceTokenFrame(frameIndex: 0))
+
+        #expect(step.timings == timings)
+    }
+
     @Test("real file backend builds MLX Mimi and Hibiki components after preparation")
     @MainActor
     func realFileBackendBuildsMLXMimiAndHibikiComponentsAfterPreparation() async throws {
@@ -474,6 +507,52 @@ struct MLXHibikiRuntimeTests {
         #expect(session.observations.decodedAudioChunkCount == 2)
         #expect(session.observations.playbackChunkCount == 2)
         #expect(session.observations.output == " mlx mlx")
+    }
+
+    @Test("real file backend reports delayed playback strategy without hiding generated text")
+    @MainActor
+    func realFileBackendReportsDelayedPlaybackStrategyWithoutHidingGeneratedText() async throws {
+        let artifacts = try preparedHibikiArtifacts(configJSON: validConfigJSON())
+        let mimiEngine = FakeRealBackendMimiRuntimeEngine()
+        let hibikiEngine = RecordingHibikiRuntimeEngine(
+            output: MLXHibikiStepOutput(
+                textToken: 902,
+                textPiece: " delayed",
+                textCandidateTokens: [902],
+                audioTokens: Array(1_100..<1_116)
+            )
+        )
+        let outputRoute = RealtimeOutputPolicy().routePlayback(
+            generatedRealtimeFactor: 0.216,
+            livePlaybackSink: BufferedPlaybackSink()
+        )
+        let session = ExperimentSession(
+            backend: RealFileHibikiTranslationExperimentBackend(
+                artifactPreparer: ModelArtifactPreparer(
+                    manifest: .hibikiQ4Default,
+                    provider: PreparedArtifactProvider(artifacts: artifacts)
+                ),
+                audioSource: FixtureAudioInputSource(sampleRate: 24_000, chunkSampleCount: 1_920, chunkCount: 1),
+                inferenceSession: MLXHibikiInferenceSession(engine: hibikiEngine),
+                playbackSink: outputRoute.playbackSink,
+                outputStrategy: outputRoute.decision,
+                mimiRuntimeLoader: { artifacts in
+                    let mimiArtifact = artifacts.files.first { $0.role == "mimiWeights" }!
+                    return MLXMimiRuntime(artifact: mimiArtifact, engine: mimiEngine)
+                }
+            )
+        )
+
+        await session.prepare()
+        await session.start()
+
+        #expect(session.state == .running)
+        #expect(session.observations.output == " delayed")
+        #expect(session.observations.playbackChunkCount == 1)
+        #expect(session.observations.outputStrategyName == "deferred playback")
+        #expect(session.observations.realtimeCapabilityClass == "sub-realtime")
+        #expect(session.observations.generatedRealtimeFactor == 0.216)
+        #expect(session.observations.outputStrategyReason == "generated audio is below the live playback threshold")
     }
 
     @Test("real file backend reports Mimi runtime load failures in component observations")

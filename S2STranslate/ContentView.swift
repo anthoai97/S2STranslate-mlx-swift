@@ -11,6 +11,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var inputSelection: DemoAudioInputSelection
     @StateObject private var runMode: DemoRunModeSelection
+    @StateObject private var playbackMode: DemoTranslationPlaybackModeSelection
     @StateObject private var session: ExperimentSession
     @State private var showSettings = false
     @State private var showPlaceholderObservations = false
@@ -18,6 +19,7 @@ struct ContentView: View {
     init() {
         let inputSelection = DemoAudioInputSelection(fixtures: FileAudioFixtureCatalog.frenchFixtures)
         let runMode = DemoRunModeSelection()
+        let playbackMode = DemoTranslationPlaybackModeSelection()
         let artifactPreparer = ModelArtifactPreparer(
             manifest: .hibikiQ4Default,
             provider: HuggingFaceModelArtifactProvider()
@@ -30,10 +32,12 @@ struct ContentView: View {
         )
         _inputSelection = StateObject(wrappedValue: inputSelection)
         _runMode = StateObject(wrappedValue: runMode)
+        _playbackMode = StateObject(wrappedValue: playbackMode)
         _session = StateObject(
             wrappedValue: ExperimentSession(
                 backend: Self.defaultBackend(
                     runMode: runMode,
+                    playbackMode: playbackMode,
                     artifactPreparer: artifactPreparer,
                     audioSource: inputSelection.source,
                     generationConfiguration: generationConfiguration
@@ -93,6 +97,7 @@ struct ContentView: View {
 
     private static func defaultBackend(
         runMode: DemoRunModeSelection,
+        playbackMode: DemoTranslationPlaybackModeSelection,
         artifactPreparer: ModelArtifactPreparer,
         audioSource: any AudioInputSource,
         generationConfiguration: HibikiGenerationConfiguration
@@ -104,6 +109,7 @@ struct ContentView: View {
                 playbackSink: AVAudioPlaybackSink()
             ),
             translateBackend: defaultTranslateBackend(
+                playbackMode: playbackMode,
                 artifactPreparer: artifactPreparer,
                 audioSource: audioSource,
                 generationConfiguration: generationConfiguration
@@ -112,6 +118,7 @@ struct ContentView: View {
     }
 
     private static func defaultTranslateBackend(
+        playbackMode: DemoTranslationPlaybackModeSelection,
         artifactPreparer: ModelArtifactPreparer,
         audioSource: any AudioInputSource,
         generationConfiguration: HibikiGenerationConfiguration
@@ -125,10 +132,16 @@ struct ContentView: View {
             .failure(message),
         ], runEvents: [])
         #else
-        RealFileHibikiTranslationExperimentBackend(
+        return RealFileHibikiTranslationExperimentBackend(
             artifactPreparer: artifactPreparer,
             audioSource: audioSource,
-            playbackSink: BufferedStreamingAudioPlaybackSink(prebufferDurationSeconds: 2),
+            playbackRouteProvider: {
+                RealtimeOutputPolicy().routePlayback(
+                    generatedRealtimeFactor: 0.23,
+                    livePlaybackSink: AVAudioPlaybackSink(),
+                    forceDiagnosticLivePlayback: playbackMode.forceDiagnosticLivePlayback()
+                )
+            },
             generationConfiguration: generationConfiguration
         )
         #endif
@@ -172,6 +185,11 @@ struct ContentView: View {
                             Toggle(isOn: $showPlaceholderObservations) {
                                 Label("Session Observations", systemImage: "chart.bar")
                             }
+
+                            Toggle(isOn: diagnosticLivePlaybackBinding) {
+                                Label("Diagnostic Live Playback", systemImage: "speaker.wave.2.fill")
+                            }
+                            .disabled(!canChangeConfiguration)
 
                             Button(role: .destructive) {
                                 showSettings = false
@@ -227,6 +245,16 @@ struct ContentView: View {
             set: { id in
                 resetTerminalSessionIfNeeded()
                 inputSelection.selectFixture(id: id)
+            }
+        )
+    }
+
+    private var diagnosticLivePlaybackBinding: Binding<Bool> {
+        Binding(
+            get: { playbackMode.diagnosticLivePlaybackEnabled },
+            set: { enabled in
+                resetTerminalSessionIfNeeded()
+                playbackMode.setDiagnosticLivePlaybackEnabled(enabled)
             }
         )
     }
@@ -453,6 +481,25 @@ private final class DemoRunModeSelection: ObservableObject, @unchecked Sendable 
         lock.lock()
         defer { lock.unlock() }
         return storedMode
+    }
+}
+
+private final class DemoTranslationPlaybackModeSelection: ObservableObject, @unchecked Sendable {
+    @Published private(set) var diagnosticLivePlaybackEnabled = false
+    private let lock = NSLock()
+    private var storedDiagnosticLivePlaybackEnabled = false
+
+    func setDiagnosticLivePlaybackEnabled(_ enabled: Bool) {
+        lock.lock()
+        storedDiagnosticLivePlaybackEnabled = enabled
+        lock.unlock()
+        diagnosticLivePlaybackEnabled = enabled
+    }
+
+    func forceDiagnosticLivePlayback() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedDiagnosticLivePlaybackEnabled
     }
 }
 
@@ -697,6 +744,12 @@ private struct PlaceholderObservationsPanel: View {
                         Text("Last")
                             .foregroundStyle(.secondary)
                         metricValue(observations.lastEventName)
+                    }
+
+                    GridRow {
+                        Text("Output Strategy")
+                            .foregroundStyle(.secondary)
+                        metricValue(observations.outputStrategySummary)
                     }
 
                     GridRow {

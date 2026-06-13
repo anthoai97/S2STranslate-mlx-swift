@@ -138,4 +138,23 @@ struct ExperimentSessionTests {
         #expect(session.observations.playbackScheduleGapMilliseconds == 95)
         #expect(session.observations.playbackUnderrunCount == 1)
     }
+
+    @Test("output strategy decision reaches Experiment Session observations")
+    @MainActor
+    func outputStrategyDecisionReachesExperimentSessionObservations() async {
+        let decision = RealtimeOutputPolicy().selectStrategy(generatedRealtimeFactor: 0.216)
+        let backend = ScriptedExperimentBackend(
+            prepareEvents: [.ready],
+            runEvents: [.outputStrategy(decision)]
+        )
+        let session = ExperimentSession(backend: backend)
+
+        await session.prepare()
+        await session.start()
+
+        #expect(session.observations.generatedRealtimeFactor == 0.216)
+        #expect(session.observations.realtimeCapabilityClass == "sub-realtime")
+        #expect(session.observations.outputStrategyName == "deferred playback")
+        #expect(session.observations.outputStrategyReason == "generated audio is below the live playback threshold")
+    }
 }

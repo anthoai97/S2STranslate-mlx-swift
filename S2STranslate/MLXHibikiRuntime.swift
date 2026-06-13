@@ -70,17 +70,20 @@ public struct MLXHibikiStepOutput: Equatable, Sendable {
     public var textPiece: String?
     public var textCandidateTokens: [Int]
     public var audioTokens: [Int]
+    public var timings: HibikiInferenceStepTimings?
 
     nonisolated public init(
         textToken: Int,
         textPiece: String? = nil,
         textCandidateTokens: [Int] = [],
-        audioTokens: [Int]
+        audioTokens: [Int],
+        timings: HibikiInferenceStepTimings? = nil
     ) {
         self.textToken = textToken
         self.textPiece = textPiece
         self.textCandidateTokens = textCandidateTokens
         self.audioTokens = audioTokens
+        self.timings = timings
     }
 }
 
@@ -196,6 +199,9 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
             )
         }
 
+        var stateCacheUpdateMilliseconds = 0.0
+
+        let sourceStateStartedAt = Date()
         sequenceState.storeSourceTokens(
             sourceAudioTokens.tokens,
             frameIndex: frameIndex,
@@ -203,13 +209,26 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
         )
         let textToken = try sequenceState.textTokenForMainStep(frameIndex: frameIndex, model: model)
         let audioTokens = try sequenceState.audioTokensForMainStep(frameIndex: frameIndex, model: model)
+        stateCacheUpdateMilliseconds += Date().timeIntervalSince(sourceStateStartedAt) * 1000
+
+        let mainEvaluationStartedAt = Date()
         let mainOutput = try model.mainStep(textToken: textToken, audioTokens: audioTokens)
+        eval(mainOutput.transformerOutput, mainOutput.textLogits)
+        let mainTransformerEvaluationMilliseconds = Date().timeIntervalSince(mainEvaluationStartedAt) * 1000
+
+        let textLogitsExtractionStartedAt = Date()
+        let textLogits = mainOutput.textLogits.asArray(Float.self)
+        let textLogitsExtractionMilliseconds = Date().timeIntervalSince(textLogitsExtractionStartedAt) * 1000
+
+        let textSamplingStartedAt = Date()
         let textSample = try tokenSampler.sample(
-            logits: mainOutput.textLogits.asArray(Float.self),
+            logits: textLogits,
             temperature: configuration.textTemperature,
             topK: configuration.textTopK,
             randomUnit: randomUnit()
         )
+        let textSamplingMilliseconds = Date().timeIntervalSince(textSamplingStartedAt) * 1000
+
         let depformerOutput = try model.sampleDepformer(
             mainTransformerOutput: mainOutput.transformerOutput,
             textToken: textSample.token,
@@ -218,18 +237,35 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
             topK: configuration.topK,
             randomUnit: randomUnit
         )
+
+        let generatedStateStartedAt = Date()
         try sequenceState.storeGeneratedTokens(
             depformerOutput.audioTokens,
             textToken: textSample.token,
             frameIndex: frameIndex,
             model: model
         )
+        stateCacheUpdateMilliseconds += Date().timeIntervalSince(generatedStateStartedAt) * 1000
 
-        return MLXHibikiStepOutput(
+        var timings = HibikiInferenceStepTimings(
+            mainTransformerEvaluationMilliseconds: mainTransformerEvaluationMilliseconds,
+            textLogitsExtractionMilliseconds: textLogitsExtractionMilliseconds,
+            textSamplingMilliseconds: textSamplingMilliseconds,
+            depformerEvaluationMilliseconds: depformerOutput.timings.evaluationMilliseconds,
+            depformerLogitsExtractionMilliseconds: depformerOutput.timings.logitsExtractionMilliseconds,
+            depformerSamplingMilliseconds: depformerOutput.timings.samplingMilliseconds,
+            stateCacheUpdateMilliseconds: stateCacheUpdateMilliseconds
+        )
+        let frameConstructionStartedAt = Date()
+        var output = MLXHibikiStepOutput(
             textToken: textSample.token,
             textCandidateTokens: textSample.candidateTokens,
-            audioTokens: depformerOutput.audioTokens
+            audioTokens: depformerOutput.audioTokens,
+            timings: timings
         )
+        timings.generatedFrameConstructionMilliseconds = Date().timeIntervalSince(frameConstructionStartedAt) * 1000
+        output.timings = timings
+        return output
     }
 
     public func reset() {
@@ -338,7 +374,8 @@ public final class MLXHibikiInferenceSession: HibikiInferenceSession, @unchecked
             frameIndex: frameIndex,
             sourceAudioTokens: sourceAudioTokens,
             text: text,
-            generatedAudioTokens: generatedAudio
+            generatedAudioTokens: generatedAudio,
+            timings: output.timings
         )
     }
 

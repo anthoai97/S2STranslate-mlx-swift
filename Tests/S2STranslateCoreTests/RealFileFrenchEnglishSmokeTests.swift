@@ -204,6 +204,39 @@ struct RealFileFrenchEnglishSmokeTests {
         print("Real file benchmark text: \(textURL.path)")
         print("Real file benchmark audio: \(audioURL.path)")
     }
+
+    @Test("benchmark report includes Hibiki substage timing summaries")
+    func benchmarkReportIncludesHibikiSubstageTimingSummaries() {
+        var benchmark = RealFileModelFlowBenchmark(
+            sourceAudioChunkCount: 40,
+            sourceAudioDurationSeconds: 3.2,
+            decoderSampleRate: 24_000,
+            runtimeLoadSeconds: 1,
+            inferenceInitializeSeconds: 2,
+            sourceLoadSeconds: 0.5,
+            modelRevision: "test"
+        )
+        benchmark.hibikiStepMilliseconds = [100, 140]
+        benchmark.hibikiMainTransformerEvaluationMilliseconds = [40, 60]
+        benchmark.hibikiTextLogitsExtractionMilliseconds = [4, 6]
+        benchmark.hibikiTextSamplingMilliseconds = [2, 4]
+        benchmark.hibikiDepformerEvaluationMilliseconds = [30, 50]
+        benchmark.hibikiDepformerLogitsExtractionMilliseconds = [8, 12]
+        benchmark.hibikiDepformerSamplingMilliseconds = [6, 10]
+        benchmark.hibikiStateCacheUpdateMilliseconds = [1, 3]
+        benchmark.hibikiGeneratedFrameConstructionMilliseconds = [0.5, 1.5]
+
+        let report = benchmark.report()
+        let markdown = benchmark.markdownReport()
+
+        #expect(report.hibikiMainTransformerEvaluationMilliseconds.average == 50)
+        #expect(report.hibikiTextLogitsExtractionMilliseconds.p50 == 6)
+        #expect(report.hibikiDepformerSamplingMilliseconds.max == 10)
+        #expect(markdown.contains("| Hibiki step | 2 | 120.000"))
+        #expect(markdown.contains("| Hibiki main transformer evaluation | 2 | 50.000"))
+        #expect(markdown.contains("| Hibiki Depformer logits extraction | 2 | 10.000"))
+        #expect(markdown.contains("| Hibiki generated frame construction | 2 | 1.000"))
+    }
 }
 
 private func smokeOutputDirectory(environment: [String: String]) -> URL {
@@ -350,6 +383,22 @@ private func benchmarkGeneratedFrame(
     let step = try await inference.step(sourceAudioTokens: sourceTokens)
     benchmark.hibikiStepMilliseconds.append(Date().timeIntervalSince(stepStartedAt) * 1000)
     benchmark.hibikiStepCount += 1
+    if let timings = step.timings {
+        benchmark.hibikiMainTransformerEvaluationMilliseconds.append(
+            timings.mainTransformerEvaluationMilliseconds
+        )
+        benchmark.hibikiTextLogitsExtractionMilliseconds.append(timings.textLogitsExtractionMilliseconds)
+        benchmark.hibikiTextSamplingMilliseconds.append(timings.textSamplingMilliseconds)
+        benchmark.hibikiDepformerEvaluationMilliseconds.append(timings.depformerEvaluationMilliseconds)
+        benchmark.hibikiDepformerLogitsExtractionMilliseconds.append(
+            timings.depformerLogitsExtractionMilliseconds
+        )
+        benchmark.hibikiDepformerSamplingMilliseconds.append(timings.depformerSamplingMilliseconds)
+        benchmark.hibikiStateCacheUpdateMilliseconds.append(timings.stateCacheUpdateMilliseconds)
+        benchmark.hibikiGeneratedFrameConstructionMilliseconds.append(
+            timings.generatedFrameConstructionMilliseconds
+        )
+    }
 
     let decodeStartedAt = Date()
     let decodedChunks = try await decoder.decode(step.generatedAudioTokens)
@@ -409,6 +458,14 @@ private struct RealFileModelFlowBenchmark {
     var encodeMilliseconds: [Double] = []
     var tailEncodeMilliseconds: [Double] = []
     var hibikiStepMilliseconds: [Double] = []
+    var hibikiMainTransformerEvaluationMilliseconds: [Double] = []
+    var hibikiTextLogitsExtractionMilliseconds: [Double] = []
+    var hibikiTextSamplingMilliseconds: [Double] = []
+    var hibikiDepformerEvaluationMilliseconds: [Double] = []
+    var hibikiDepformerLogitsExtractionMilliseconds: [Double] = []
+    var hibikiDepformerSamplingMilliseconds: [Double] = []
+    var hibikiStateCacheUpdateMilliseconds: [Double] = []
+    var hibikiGeneratedFrameConstructionMilliseconds: [Double] = []
     var decodeMilliseconds: [Double] = []
 
     func report() -> RealFileModelFlowBenchmarkReport {
@@ -432,6 +489,20 @@ private struct RealFileModelFlowBenchmark {
             encodeMilliseconds: BenchmarkSummary(values: encodeMilliseconds),
             tailEncodeMilliseconds: BenchmarkSummary(values: tailEncodeMilliseconds),
             hibikiStepMilliseconds: BenchmarkSummary(values: hibikiStepMilliseconds),
+            hibikiMainTransformerEvaluationMilliseconds: BenchmarkSummary(
+                values: hibikiMainTransformerEvaluationMilliseconds
+            ),
+            hibikiTextLogitsExtractionMilliseconds: BenchmarkSummary(values: hibikiTextLogitsExtractionMilliseconds),
+            hibikiTextSamplingMilliseconds: BenchmarkSummary(values: hibikiTextSamplingMilliseconds),
+            hibikiDepformerEvaluationMilliseconds: BenchmarkSummary(values: hibikiDepformerEvaluationMilliseconds),
+            hibikiDepformerLogitsExtractionMilliseconds: BenchmarkSummary(
+                values: hibikiDepformerLogitsExtractionMilliseconds
+            ),
+            hibikiDepformerSamplingMilliseconds: BenchmarkSummary(values: hibikiDepformerSamplingMilliseconds),
+            hibikiStateCacheUpdateMilliseconds: BenchmarkSummary(values: hibikiStateCacheUpdateMilliseconds),
+            hibikiGeneratedFrameConstructionMilliseconds: BenchmarkSummary(
+                values: hibikiGeneratedFrameConstructionMilliseconds
+            ),
             decodeMilliseconds: BenchmarkSummary(values: decodeMilliseconds)
         )
     }
@@ -461,6 +532,14 @@ private struct RealFileModelFlowBenchmark {
         | Mimi encode | \(report.encodeMilliseconds.count) | \(format(report.encodeMilliseconds.average)) | \(format(report.encodeMilliseconds.p50)) | \(format(report.encodeMilliseconds.p95)) | \(format(report.encodeMilliseconds.max)) |
         | Tail Mimi encode | \(report.tailEncodeMilliseconds.count) | \(format(report.tailEncodeMilliseconds.average)) | \(format(report.tailEncodeMilliseconds.p50)) | \(format(report.tailEncodeMilliseconds.p95)) | \(format(report.tailEncodeMilliseconds.max)) |
         | Hibiki step | \(report.hibikiStepMilliseconds.count) | \(format(report.hibikiStepMilliseconds.average)) | \(format(report.hibikiStepMilliseconds.p50)) | \(format(report.hibikiStepMilliseconds.p95)) | \(format(report.hibikiStepMilliseconds.max)) |
+        | Hibiki main transformer evaluation | \(report.hibikiMainTransformerEvaluationMilliseconds.count) | \(format(report.hibikiMainTransformerEvaluationMilliseconds.average)) | \(format(report.hibikiMainTransformerEvaluationMilliseconds.p50)) | \(format(report.hibikiMainTransformerEvaluationMilliseconds.p95)) | \(format(report.hibikiMainTransformerEvaluationMilliseconds.max)) |
+        | Hibiki text logits extraction | \(report.hibikiTextLogitsExtractionMilliseconds.count) | \(format(report.hibikiTextLogitsExtractionMilliseconds.average)) | \(format(report.hibikiTextLogitsExtractionMilliseconds.p50)) | \(format(report.hibikiTextLogitsExtractionMilliseconds.p95)) | \(format(report.hibikiTextLogitsExtractionMilliseconds.max)) |
+        | Hibiki text sampling | \(report.hibikiTextSamplingMilliseconds.count) | \(format(report.hibikiTextSamplingMilliseconds.average)) | \(format(report.hibikiTextSamplingMilliseconds.p50)) | \(format(report.hibikiTextSamplingMilliseconds.p95)) | \(format(report.hibikiTextSamplingMilliseconds.max)) |
+        | Hibiki Depformer evaluation | \(report.hibikiDepformerEvaluationMilliseconds.count) | \(format(report.hibikiDepformerEvaluationMilliseconds.average)) | \(format(report.hibikiDepformerEvaluationMilliseconds.p50)) | \(format(report.hibikiDepformerEvaluationMilliseconds.p95)) | \(format(report.hibikiDepformerEvaluationMilliseconds.max)) |
+        | Hibiki Depformer logits extraction | \(report.hibikiDepformerLogitsExtractionMilliseconds.count) | \(format(report.hibikiDepformerLogitsExtractionMilliseconds.average)) | \(format(report.hibikiDepformerLogitsExtractionMilliseconds.p50)) | \(format(report.hibikiDepformerLogitsExtractionMilliseconds.p95)) | \(format(report.hibikiDepformerLogitsExtractionMilliseconds.max)) |
+        | Hibiki Depformer sampling | \(report.hibikiDepformerSamplingMilliseconds.count) | \(format(report.hibikiDepformerSamplingMilliseconds.average)) | \(format(report.hibikiDepformerSamplingMilliseconds.p50)) | \(format(report.hibikiDepformerSamplingMilliseconds.p95)) | \(format(report.hibikiDepformerSamplingMilliseconds.max)) |
+        | Hibiki state/cache updates | \(report.hibikiStateCacheUpdateMilliseconds.count) | \(format(report.hibikiStateCacheUpdateMilliseconds.average)) | \(format(report.hibikiStateCacheUpdateMilliseconds.p50)) | \(format(report.hibikiStateCacheUpdateMilliseconds.p95)) | \(format(report.hibikiStateCacheUpdateMilliseconds.max)) |
+        | Hibiki generated frame construction | \(report.hibikiGeneratedFrameConstructionMilliseconds.count) | \(format(report.hibikiGeneratedFrameConstructionMilliseconds.average)) | \(format(report.hibikiGeneratedFrameConstructionMilliseconds.p50)) | \(format(report.hibikiGeneratedFrameConstructionMilliseconds.p95)) | \(format(report.hibikiGeneratedFrameConstructionMilliseconds.max)) |
         | Mimi decode | \(report.decodeMilliseconds.count) | \(format(report.decodeMilliseconds.average)) | \(format(report.decodeMilliseconds.p50)) | \(format(report.decodeMilliseconds.p95)) | \(format(report.decodeMilliseconds.max)) |
         """
     }
@@ -490,6 +569,14 @@ private struct RealFileModelFlowBenchmarkReport: Codable {
     var encodeMilliseconds: BenchmarkSummary
     var tailEncodeMilliseconds: BenchmarkSummary
     var hibikiStepMilliseconds: BenchmarkSummary
+    var hibikiMainTransformerEvaluationMilliseconds: BenchmarkSummary
+    var hibikiTextLogitsExtractionMilliseconds: BenchmarkSummary
+    var hibikiTextSamplingMilliseconds: BenchmarkSummary
+    var hibikiDepformerEvaluationMilliseconds: BenchmarkSummary
+    var hibikiDepformerLogitsExtractionMilliseconds: BenchmarkSummary
+    var hibikiDepformerSamplingMilliseconds: BenchmarkSummary
+    var hibikiStateCacheUpdateMilliseconds: BenchmarkSummary
+    var hibikiGeneratedFrameConstructionMilliseconds: BenchmarkSummary
     var decodeMilliseconds: BenchmarkSummary
 }
 

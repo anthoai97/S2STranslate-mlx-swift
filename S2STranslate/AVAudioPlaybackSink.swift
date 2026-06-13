@@ -464,7 +464,7 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, Playba
             audioPlaybackLogger.info("av playback scheduled buffers=\(snapshot.scheduledBufferCount, privacy: .public) completed=\(snapshot.completedBufferCount, privacy: .public) pendingSeconds=\(snapshot.pendingDurationMilliseconds / 1000, privacy: .public) underruns=\(snapshot.underrunCount, privacy: .public) gapMs=\(snapshot.lastScheduleGapMilliseconds ?? -1, privacy: .public)")
         }
         let scheduledSampleCount = samples.count
-        player.scheduleBuffer(buffer) { [weak self] in
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             self?.completePendingBuffer(sampleCount: scheduledSampleCount, generation: generation)
         }
     }
