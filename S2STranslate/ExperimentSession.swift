@@ -159,6 +159,11 @@ public struct ExperimentObservations: Equatable {
     public var playbackChunkCount: Int
     public var playbackDurationMilliseconds: Double
     public var lastPlaybackFrameIndex: Int?
+    public var playbackScheduledDurationMilliseconds: Double
+    public var playbackCompletedDurationMilliseconds: Double
+    public var playbackPendingDurationMilliseconds: Double
+    public var playbackScheduleGapMilliseconds: Double?
+    public var playbackUnderrunCount: Int
     public var hibikiInferenceStatus: String
     public var hibikiStepCount: Int
     public var hibikiTextTokenCount: Int
@@ -196,6 +201,11 @@ public struct ExperimentObservations: Equatable {
         playbackChunkCount: Int = 0,
         playbackDurationMilliseconds: Double = 0,
         lastPlaybackFrameIndex: Int? = nil,
+        playbackScheduledDurationMilliseconds: Double = 0,
+        playbackCompletedDurationMilliseconds: Double = 0,
+        playbackPendingDurationMilliseconds: Double = 0,
+        playbackScheduleGapMilliseconds: Double? = nil,
+        playbackUnderrunCount: Int = 0,
         hibikiInferenceStatus: String = "idle",
         hibikiStepCount: Int = 0,
         hibikiTextTokenCount: Int = 0,
@@ -232,6 +242,11 @@ public struct ExperimentObservations: Equatable {
         self.playbackChunkCount = playbackChunkCount
         self.playbackDurationMilliseconds = playbackDurationMilliseconds
         self.lastPlaybackFrameIndex = lastPlaybackFrameIndex
+        self.playbackScheduledDurationMilliseconds = playbackScheduledDurationMilliseconds
+        self.playbackCompletedDurationMilliseconds = playbackCompletedDurationMilliseconds
+        self.playbackPendingDurationMilliseconds = playbackPendingDurationMilliseconds
+        self.playbackScheduleGapMilliseconds = playbackScheduleGapMilliseconds
+        self.playbackUnderrunCount = playbackUnderrunCount
         self.hibikiInferenceStatus = hibikiInferenceStatus
         self.hibikiStepCount = hibikiStepCount
         self.hibikiTextTokenCount = hibikiTextTokenCount
@@ -329,6 +344,13 @@ public struct ExperimentObservations: Equatable {
             playbackChunkCount += 1
             playbackDurationMilliseconds += chunk.durationMilliseconds
             lastPlaybackFrameIndex = chunk.frameIndex
+        case let .diagnostics(snapshot):
+            playbackStatus = snapshot.playbackStarted ? "streaming" : "buffering"
+            playbackScheduledDurationMilliseconds = snapshot.scheduledDurationMilliseconds
+            playbackCompletedDurationMilliseconds = snapshot.completedDurationMilliseconds
+            playbackPendingDurationMilliseconds = snapshot.pendingDurationMilliseconds
+            playbackScheduleGapMilliseconds = snapshot.lastScheduleGapMilliseconds
+            playbackUnderrunCount = snapshot.underrunCount
         case .streamStopped:
             playbackStatus = "stopped"
         case let .streamFailed(message):

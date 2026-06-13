@@ -104,4 +104,38 @@ struct ExperimentSessionTests {
         #expect(session.state == .failed("Fake backend failure"))
         #expect(session.observations.lastEventName == "failed")
     }
+
+    @Test("playback diagnostics reach Experiment Session observations")
+    @MainActor
+    func playbackDiagnosticsReachExperimentSessionObservations() async {
+        let snapshot = PlaybackDiagnosticsSnapshot(
+            sampleRate: 24_000,
+            playbackStarted: true,
+            scheduledBufferCount: 4,
+            completedBufferCount: 2,
+            pendingBufferCount: 2,
+            scheduledSampleCount: 7_680,
+            completedSampleCount: 3_840,
+            pendingSampleCount: 3_840,
+            pendingDurationMilliseconds: 160,
+            lastScheduleGapMilliseconds: 95,
+            underrunCount: 1,
+            elapsedMilliseconds: 1_000
+        )
+        let backend = ScriptedExperimentBackend(
+            prepareEvents: [.ready],
+            runEvents: [.playback(.diagnostics(snapshot))]
+        )
+        let session = ExperimentSession(backend: backend)
+
+        await session.prepare()
+        await session.start()
+
+        #expect(session.observations.playbackStatus == "streaming")
+        #expect(session.observations.playbackScheduledDurationMilliseconds == 320)
+        #expect(session.observations.playbackCompletedDurationMilliseconds == 160)
+        #expect(session.observations.playbackPendingDurationMilliseconds == 160)
+        #expect(session.observations.playbackScheduleGapMilliseconds == 95)
+        #expect(session.observations.playbackUnderrunCount == 1)
+    }
 }

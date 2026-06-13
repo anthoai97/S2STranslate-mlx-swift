@@ -1,4 +1,5 @@
 .build/
 DerivedData/
 .scratch/real-file-smoke/
+.scratch/real-file-benchmark/
 ref/

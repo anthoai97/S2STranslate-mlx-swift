@@ -61,6 +61,50 @@ Override the output directory with:
 S2S_REAL_FILE_SMOKE_OUTPUT_DIR=/path/to/output
 ```
 
+## Automated Benchmark Command
+
+Run the guarded benchmark when you want to measure current model-flow production speed without AVAudio playback:
+
+```sh
+S2S_RUN_REAL_FILE_BENCHMARKS=1 swift test --filter RealFileFrenchEnglishSmokeTests
+```
+
+It uses the same defaults as the smoke test:
+
+- weights: `ref/hibiki-zero-mlx/weights`
+- audio: `French Europarl short 1`
+- generation config: app real-file defaults, including tail flush
+
+For a quick speed-only probe, cap the source and disable tail flush. This is useful for timing the model loop, but it may leave `translation.txt` empty because visible text can arrive after the first few seconds of source audio:
+
+```sh
+S2S_RUN_REAL_FILE_BENCHMARKS=1 \
+S2S_REAL_FILE_SMOKE_WEIGHTS_DIR=/path/to/weights \
+S2S_REAL_FILE_SMOKE_AUDIO_PATH=/path/to/french-europarl-short-1.mp3 \
+S2S_REAL_FILE_BENCHMARK_OUTPUT_DIR=/path/to/output \
+S2S_REAL_FILE_BENCHMARK_MAX_SOURCE_CHUNKS=20 \
+S2S_REAL_FILE_BENCHMARK_INCLUDE_TAIL=0 \
+swift test --filter RealFileFrenchEnglishSmokeTests
+```
+
+For a short text-output probe, keep tail flush enabled and use more source chunks:
+
+```sh
+S2S_RUN_REAL_FILE_BENCHMARKS=1 \
+S2S_REAL_FILE_BENCHMARK_OUTPUT_DIR=.scratch/real-file-benchmark/text-check \
+S2S_REAL_FILE_BENCHMARK_MAX_SOURCE_CHUNKS=40 \
+swift test --filter RealFileFrenchEnglishSmokeTests
+```
+
+The benchmark writes:
+
+- `.scratch/real-file-benchmark/latest/benchmark.json`
+- `.scratch/real-file-benchmark/latest/benchmark.md`
+- `.scratch/real-file-benchmark/latest/translation.txt`
+- `.scratch/real-file-benchmark/latest/translation.wav`
+
+Read `generatedRealtimeFactor` first. Values below `1.0` mean the model flow produces decoded audio slower than playback consumes it. The stage table then shows whether Mimi encode, Hibiki step, or Mimi decode dominates latency.
+
 ## Latest Verified Run
 
 - 2026-06-11: `S2S_RUN_REAL_FILE_SMOKE_TESTS=1 swift test --filter RealFileFrenchEnglishSmoke` passed in 41.663 seconds with local `ref/hibiki-zero-mlx/weights`, `French Europarl short 1`, real MLX Mimi encode/decode, real MLX Hibiki generation, and `BufferedPlaybackSink`.

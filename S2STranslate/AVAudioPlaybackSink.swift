@@ -12,7 +12,7 @@ protocol AudioPlaybackEngine: Sendable {
     func reset()
 }
 
-public final class AVAudioPlaybackSink: PlaybackSink, @unchecked Sendable {
+public final class AVAudioPlaybackSink: PlaybackSink, PlaybackDiagnosticsReporting, @unchecked Sendable {
     private let engine: any AudioPlaybackEngine
     private let state = Mutex(AVAudioPlaybackSinkState())
 
@@ -89,6 +89,10 @@ public final class AVAudioPlaybackSink: PlaybackSink, @unchecked Sendable {
             state.stopped = false
         }
         engine.reset()
+    }
+
+    public func diagnosticsSnapshot() -> PlaybackDiagnosticsSnapshot? {
+        (engine as? any PlaybackDiagnosticsReporting)?.diagnosticsSnapshot()
     }
 }
 
@@ -173,7 +177,7 @@ public final class DeferredAudioPlaybackSink: PlaybackSink, @unchecked Sendable 
     }
 }
 
-public final class BufferedStreamingAudioPlaybackSink: PlaybackSink, @unchecked Sendable {
+public final class BufferedStreamingAudioPlaybackSink: PlaybackSink, PlaybackDiagnosticsReporting, @unchecked Sendable {
     private let wrapped: any PlaybackSink
     private let prebufferDurationSeconds: Double
     private let state = Mutex(BufferedStreamingAudioPlaybackSinkState())
@@ -277,6 +281,31 @@ public final class BufferedStreamingAudioPlaybackSink: PlaybackSink, @unchecked 
         wrapped.reset()
     }
 
+    public func diagnosticsSnapshot() -> PlaybackDiagnosticsSnapshot? {
+        let bufferedSnapshot = state.withLock { state -> PlaybackDiagnosticsSnapshot? in
+            guard let sampleRate = state.sampleRate else { return nil }
+            guard !state.wrappedStarted else { return nil }
+            let pendingSampleCount = state.pendingChunks.reduce(0) { $0 + $1.samples.count }
+            return PlaybackDiagnosticsSnapshot(
+                sampleRate: sampleRate,
+                playbackStarted: false,
+                scheduledBufferCount: state.pendingChunks.count,
+                completedBufferCount: 0,
+                pendingBufferCount: state.pendingChunks.count,
+                scheduledSampleCount: pendingSampleCount,
+                completedSampleCount: 0,
+                pendingSampleCount: pendingSampleCount,
+                pendingDurationMilliseconds: Double(pendingSampleCount) / Double(sampleRate) * 1000,
+                underrunCount: 0,
+                elapsedMilliseconds: 0
+            )
+        }
+        if let bufferedSnapshot {
+            return bufferedSnapshot
+        }
+        return (wrapped as? any PlaybackDiagnosticsReporting)?.diagnosticsSnapshot()
+    }
+
     private func perform(_ action: BufferedStreamingPlaybackAction) async throws {
         switch action {
         case .wait:
@@ -345,7 +374,7 @@ private struct AVAudioPlaybackSinkState: Sendable {
     var stopped = false
 }
 
-private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unchecked Sendable {
+private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, PlaybackDiagnosticsReporting, @unchecked Sendable {
     private let engine = AVAudioEngine()
     private let player = AVAudioPlayerNode()
     private let pendingLock = NSLock()
@@ -353,6 +382,15 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
     private var attached = false
     private var pendingBufferCount = 0
     private var pendingSampleCount = 0
+    private var scheduledBufferCount = 0
+    private var completedBufferCount = 0
+    private var scheduledSampleCount = 0
+    private var completedSampleCount = 0
+    private var underrunCount = 0
+    private var startedAt: Date?
+    private var lastScheduledAt: Date?
+    private var lastScheduleGapMilliseconds: Double?
+    private var diagnosticsGeneration = 0
     private var finishContinuations: [CheckedContinuation<Void, Never>] = []
 
     func start(sampleRate: Int) throws {
@@ -380,6 +418,7 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
         try engine.start()
         player.play()
         currentFormat = format
+        resetDiagnostics()
     }
 
     func schedule(samples: [Float], sampleRate: Int) throws {
@@ -406,13 +445,27 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
         samples.withUnsafeBufferPointer { source in
             channel.update(from: source.baseAddress!, count: samples.count)
         }
+        let scheduledAt = Date()
         pendingLock.lock()
+        if let lastScheduledAt {
+            lastScheduleGapMilliseconds = scheduledAt.timeIntervalSince(lastScheduledAt) * 1000
+        } else {
+            lastScheduleGapMilliseconds = nil
+        }
+        lastScheduledAt = scheduledAt
+        scheduledBufferCount += 1
+        scheduledSampleCount += samples.count
         pendingBufferCount += 1
         pendingSampleCount += samples.count
+        let generation = diagnosticsGeneration
+        let snapshot = diagnosticsSnapshotLocked(now: scheduledAt)
         pendingLock.unlock()
+        if let snapshot {
+            audioPlaybackLogger.info("av playback scheduled buffers=\(snapshot.scheduledBufferCount, privacy: .public) completed=\(snapshot.completedBufferCount, privacy: .public) pendingSeconds=\(snapshot.pendingDurationMilliseconds / 1000, privacy: .public) underruns=\(snapshot.underrunCount, privacy: .public) gapMs=\(snapshot.lastScheduleGapMilliseconds ?? -1, privacy: .public)")
+        }
         let scheduledSampleCount = samples.count
         player.scheduleBuffer(buffer) { [weak self] in
-            self?.completePendingBuffer(sampleCount: scheduledSampleCount)
+            self?.completePendingBuffer(sampleCount: scheduledSampleCount, generation: generation)
         }
     }
 
@@ -451,16 +504,36 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
         stop()
     }
 
-    private func completePendingBuffer(sampleCount: Int) {
+    func diagnosticsSnapshot() -> PlaybackDiagnosticsSnapshot? {
         pendingLock.lock()
+        defer { pendingLock.unlock() }
+        return diagnosticsSnapshotLocked(now: Date())
+    }
+
+    private func completePendingBuffer(sampleCount: Int, generation: Int) {
+        pendingLock.lock()
+        guard generation == diagnosticsGeneration else {
+            pendingLock.unlock()
+            return
+        }
+        completedBufferCount += 1
+        completedSampleCount += sampleCount
         pendingBufferCount = max(0, pendingBufferCount - 1)
         pendingSampleCount = max(0, pendingSampleCount - sampleCount)
+        let isWaitingForFinish = !finishContinuations.isEmpty
+        if pendingBufferCount == 0 && !isWaitingForFinish {
+            underrunCount += 1
+        }
+        let snapshot = diagnosticsSnapshotLocked(now: Date())
         let continuations = pendingBufferCount == 0 ? finishContinuations : []
         if pendingBufferCount == 0 {
             finishContinuations.removeAll()
         }
         pendingLock.unlock()
 
+        if let snapshot, snapshot.pendingBufferCount == 0 {
+            audioPlaybackLogger.warning("av playback queue drained scheduled=\(snapshot.scheduledBufferCount, privacy: .public) completed=\(snapshot.completedBufferCount, privacy: .public) underruns=\(snapshot.underrunCount, privacy: .public)")
+        }
         continuations.forEach { $0.resume() }
     }
 
@@ -501,5 +574,40 @@ private final class AVFoundationAudioPlaybackEngine: AudioPlaybackEngine, @unche
         pendingLock.lock()
         defer { pendingLock.unlock() }
         return (pendingBufferCount, pendingSampleCount)
+    }
+
+    private func resetDiagnostics() {
+        pendingLock.lock()
+        diagnosticsGeneration += 1
+        pendingBufferCount = 0
+        pendingSampleCount = 0
+        scheduledBufferCount = 0
+        completedBufferCount = 0
+        scheduledSampleCount = 0
+        completedSampleCount = 0
+        underrunCount = 0
+        startedAt = Date()
+        lastScheduledAt = nil
+        lastScheduleGapMilliseconds = nil
+        pendingLock.unlock()
+    }
+
+    private func diagnosticsSnapshotLocked(now: Date) -> PlaybackDiagnosticsSnapshot? {
+        guard let sampleRate = currentFormat?.sampleRate else { return nil }
+        let pendingDurationMilliseconds = Double(pendingSampleCount) / sampleRate * 1000
+        return PlaybackDiagnosticsSnapshot(
+            sampleRate: Int(sampleRate),
+            playbackStarted: true,
+            scheduledBufferCount: scheduledBufferCount,
+            completedBufferCount: completedBufferCount,
+            pendingBufferCount: pendingBufferCount,
+            scheduledSampleCount: scheduledSampleCount,
+            completedSampleCount: completedSampleCount,
+            pendingSampleCount: pendingSampleCount,
+            pendingDurationMilliseconds: pendingDurationMilliseconds,
+            lastScheduleGapMilliseconds: lastScheduleGapMilliseconds,
+            underrunCount: underrunCount,
+            elapsedMilliseconds: now.timeIntervalSince(startedAt ?? now) * 1000
+        )
     }
 }

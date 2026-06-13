@@ -830,6 +830,36 @@ private struct PlaceholderObservationsPanel: View {
                             .foregroundStyle(.secondary)
                         Text("\(observations.playbackChunkCount)")
                     }
+
+                    GridRow {
+                        Text("Queued")
+                            .foregroundStyle(.secondary)
+                        Text(playbackScheduledText)
+                    }
+
+                    GridRow {
+                        Text("Completed")
+                            .foregroundStyle(.secondary)
+                        Text(playbackCompletedText)
+                    }
+
+                    GridRow {
+                        Text("Pending")
+                            .foregroundStyle(.secondary)
+                        Text(playbackPendingText)
+                    }
+
+                    GridRow {
+                        Text("Gap")
+                            .foregroundStyle(.secondary)
+                        Text(playbackGapText)
+                    }
+
+                    GridRow {
+                        Text("Underruns")
+                            .foregroundStyle(.secondary)
+                        Text("\(observations.playbackUnderrunCount)")
+                    }
                 }
                 .font(.system(.body, design: .monospaced))
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -891,6 +921,23 @@ private struct PlaceholderObservationsPanel: View {
 
     private var decodedDurationText: String {
         observations.decodedAudioDurationMilliseconds.formatted(.number.precision(.fractionLength(0))) + " ms"
+    }
+
+    private var playbackScheduledText: String {
+        observations.playbackScheduledDurationMilliseconds.formatted(.number.precision(.fractionLength(0))) + " ms"
+    }
+
+    private var playbackCompletedText: String {
+        observations.playbackCompletedDurationMilliseconds.formatted(.number.precision(.fractionLength(0))) + " ms"
+    }
+
+    private var playbackPendingText: String {
+        observations.playbackPendingDurationMilliseconds.formatted(.number.precision(.fractionLength(0))) + " ms"
+    }
+
+    private var playbackGapText: String {
+        guard let gap = observations.playbackScheduleGapMilliseconds else { return "n/a" }
+        return gap.formatted(.number.precision(.fractionLength(0))) + " ms"
     }
 }
 

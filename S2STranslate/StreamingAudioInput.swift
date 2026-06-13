@@ -263,6 +263,9 @@ public struct SourceAudioPlaybackExperimentBackend: ExperimentBackend, Sendable 
                 )
                 try await playbackSink.receive(decoded)
                 events.append(.playback(.chunk(decoded)))
+                if let diagnostics = playbackDiagnosticsEvent(from: playbackSink) {
+                    events.append(diagnostics)
+                }
             }
 
             events.append(.audioInput(.streamStopped))

@@ -910,6 +910,9 @@ private func appendHibikiGeneratedFrameEvents(
         await emit(.mimiDecode(.chunk(decoded)))
         try await playbackSink.receive(decoded)
         await emit(.playback(.chunk(decoded)))
+        if let diagnostics = playbackDiagnosticsEvent(from: playbackSink) {
+            await emit(diagnostics)
+        }
     }
 
     return step.text

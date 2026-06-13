@@ -50,6 +50,31 @@ struct AVAudioPlaybackSinkTests {
         }
     }
 
+    @Test("AV playback sink exposes playback diagnostics from engine")
+    func avPlaybackSinkExposesPlaybackDiagnosticsFromEngine() async throws {
+        let engine = RecordingAudioPlaybackEngine()
+        let sink = AVAudioPlaybackSink(engine: engine)
+
+        try await sink.start(sampleRate: 24_000)
+        try await sink.receive(
+            DecodedAudioChunk(
+                frameIndex: 0,
+                timestampMilliseconds: 0,
+                sampleRate: 24_000,
+                samples: [0.1, 0.2, 0.3],
+                sourceTokenFrameIndex: 0
+            )
+        )
+
+        let snapshot = try #require(sink.diagnosticsSnapshot())
+        #expect(snapshot.playbackStarted)
+        #expect(snapshot.sampleRate == 24_000)
+        #expect(snapshot.scheduledBufferCount == 1)
+        #expect(snapshot.scheduledSampleCount == 3)
+        #expect(snapshot.pendingSampleCount == 3)
+        #expect(snapshot.pendingDurationMilliseconds == 0.125)
+    }
+
     @Test("AV playback sink converts engine failures to playback errors")
     func avPlaybackSinkConvertsEngineFailuresToPlaybackErrors() async throws {
         let engine = RecordingAudioPlaybackEngine()
@@ -132,6 +157,10 @@ struct AVAudioPlaybackSinkTests {
         )
         #expect(engine.startedSampleRates.isEmpty)
         #expect(engine.scheduledSampleCounts.isEmpty)
+        let prebufferSnapshot = try #require(sink.diagnosticsSnapshot())
+        #expect(!prebufferSnapshot.playbackStarted)
+        #expect(prebufferSnapshot.pendingSampleCount == 1)
+        #expect(prebufferSnapshot.pendingDurationMilliseconds == 100)
 
         try await sink.receive(
             DecodedAudioChunk(
@@ -144,6 +173,10 @@ struct AVAudioPlaybackSinkTests {
         )
         #expect(engine.startedSampleRates == [10])
         #expect(engine.scheduledSampleCounts == [1, 1])
+        let playbackSnapshot = try #require(sink.diagnosticsSnapshot())
+        #expect(playbackSnapshot.playbackStarted)
+        #expect(playbackSnapshot.scheduledSampleCount == 2)
+        #expect(playbackSnapshot.pendingSampleCount == 2)
 
         try await sink.receive(
             DecodedAudioChunk(
@@ -161,7 +194,7 @@ struct AVAudioPlaybackSinkTests {
     }
 }
 
-private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecked Sendable {
+private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, PlaybackDiagnosticsReporting, @unchecked Sendable {
     private let state = Mutex(RecordingAudioPlaybackEngineState())
 
     var startedSampleRates: [Int] {
@@ -196,6 +229,12 @@ private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecke
                 throw startError
             }
             state.startedSampleRates.append(sampleRate)
+            state.sampleRate = sampleRate
+            state.scheduledBufferCount = 0
+            state.completedBufferCount = 0
+            state.scheduledSampleCount = 0
+            state.completedSampleCount = 0
+            state.pendingSampleCount = 0
         }
     }
 
@@ -205,6 +244,9 @@ private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecke
                 throw scheduleError
             }
             state.scheduledSampleCounts.append(samples.count)
+            state.scheduledBufferCount += 1
+            state.scheduledSampleCount += samples.count
+            state.pendingSampleCount += samples.count
         }
     }
 
@@ -219,6 +261,25 @@ private final class RecordingAudioPlaybackEngine: AudioPlaybackEngine, @unchecke
     func reset() {
         state.withLock { $0.resetCount += 1 }
     }
+
+    func diagnosticsSnapshot() -> PlaybackDiagnosticsSnapshot? {
+        state.withLock { state in
+            guard let sampleRate = state.sampleRate else { return nil }
+            return PlaybackDiagnosticsSnapshot(
+                sampleRate: sampleRate,
+                playbackStarted: true,
+                scheduledBufferCount: state.scheduledBufferCount,
+                completedBufferCount: state.completedBufferCount,
+                pendingBufferCount: state.scheduledBufferCount - state.completedBufferCount,
+                scheduledSampleCount: state.scheduledSampleCount,
+                completedSampleCount: state.completedSampleCount,
+                pendingSampleCount: state.pendingSampleCount,
+                pendingDurationMilliseconds: Double(state.pendingSampleCount) / Double(sampleRate) * 1000,
+                underrunCount: 0,
+                elapsedMilliseconds: 0
+            )
+        }
+    }
 }
 
 private struct RecordingAudioPlaybackEngineState {
@@ -229,6 +290,12 @@ private struct RecordingAudioPlaybackEngineState {
     var resetCount = 0
     var startError: ExamplePlaybackEngineError?
     var scheduleError: ExamplePlaybackEngineError?
+    var sampleRate: Int?
+    var scheduledBufferCount = 0
+    var completedBufferCount = 0
+    var scheduledSampleCount = 0
+    var completedSampleCount = 0
+    var pendingSampleCount = 0
 }
 
 private enum ExamplePlaybackEngineError: Error, CustomStringConvertible {

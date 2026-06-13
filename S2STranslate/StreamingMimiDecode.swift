@@ -95,6 +95,7 @@ public enum MimiDecodeEvent: Equatable, Sendable {
 public enum PlaybackEvent: Equatable, Sendable {
     case streamStarted(sampleRate: Int)
     case chunk(DecodedAudioChunk)
+    case diagnostics(PlaybackDiagnosticsSnapshot)
     case streamStopped
     case streamFailed(String)
 
@@ -104,6 +105,8 @@ public enum PlaybackEvent: Equatable, Sendable {
             "streamStarted"
         case .chunk:
             "chunk"
+        case .diagnostics:
+            "diagnostics"
         case .streamStopped:
             "streamStopped"
         case .streamFailed:
@@ -115,7 +118,7 @@ public enum PlaybackEvent: Equatable, Sendable {
         switch self {
         case .streamStarted, .streamStopped, .streamFailed:
             true
-        case .chunk:
+        case .chunk, .diagnostics:
             false
         }
     }
@@ -152,6 +155,63 @@ public enum PlaybackSinkError: Error, Equatable, Sendable {
     }
 }
 
+public struct PlaybackDiagnosticsSnapshot: Equatable, Sendable {
+    public var sampleRate: Int
+    public var playbackStarted: Bool
+    public var scheduledBufferCount: Int
+    public var completedBufferCount: Int
+    public var pendingBufferCount: Int
+    public var scheduledSampleCount: Int
+    public var completedSampleCount: Int
+    public var pendingSampleCount: Int
+    public var pendingDurationMilliseconds: Double
+    public var lastScheduleGapMilliseconds: Double?
+    public var underrunCount: Int
+    public var elapsedMilliseconds: Double
+
+    nonisolated public init(
+        sampleRate: Int,
+        playbackStarted: Bool,
+        scheduledBufferCount: Int,
+        completedBufferCount: Int,
+        pendingBufferCount: Int,
+        scheduledSampleCount: Int,
+        completedSampleCount: Int,
+        pendingSampleCount: Int,
+        pendingDurationMilliseconds: Double,
+        lastScheduleGapMilliseconds: Double? = nil,
+        underrunCount: Int,
+        elapsedMilliseconds: Double
+    ) {
+        self.sampleRate = sampleRate
+        self.playbackStarted = playbackStarted
+        self.scheduledBufferCount = scheduledBufferCount
+        self.completedBufferCount = completedBufferCount
+        self.pendingBufferCount = pendingBufferCount
+        self.scheduledSampleCount = scheduledSampleCount
+        self.completedSampleCount = completedSampleCount
+        self.pendingSampleCount = pendingSampleCount
+        self.pendingDurationMilliseconds = pendingDurationMilliseconds
+        self.lastScheduleGapMilliseconds = lastScheduleGapMilliseconds
+        self.underrunCount = underrunCount
+        self.elapsedMilliseconds = elapsedMilliseconds
+    }
+
+    public var scheduledDurationMilliseconds: Double {
+        guard sampleRate > 0 else { return 0 }
+        return Double(scheduledSampleCount) / Double(sampleRate) * 1000
+    }
+
+    public var completedDurationMilliseconds: Double {
+        guard sampleRate > 0 else { return 0 }
+        return Double(completedSampleCount) / Double(sampleRate) * 1000
+    }
+}
+
+public protocol PlaybackDiagnosticsReporting: Sendable {
+    func diagnosticsSnapshot() -> PlaybackDiagnosticsSnapshot?
+}
+
 public protocol MimiStreamingDecoder: Sendable {
     func description() async -> MimiDecoderDescription
     func decode(_ frame: MimiTokenFrame) async throws -> [DecodedAudioChunk]
@@ -168,6 +228,13 @@ public protocol PlaybackSink: Sendable {
 
 public extension PlaybackSink {
     func finish() async throws {}
+}
+
+func playbackDiagnosticsEvent(from playbackSink: any PlaybackSink) -> ExperimentEvent? {
+    guard let diagnostics = (playbackSink as? any PlaybackDiagnosticsReporting)?.diagnosticsSnapshot() else {
+        return nil
+    }
+    return .playback(.diagnostics(diagnostics))
 }
 
 public final class DeterministicMimiStreamingDecoder: MimiStreamingDecoder, @unchecked Sendable {
@@ -442,6 +509,9 @@ public struct MimiCodecPlaybackExperimentBackend: ExperimentBackend, Sendable {
                         events.append(.mimiDecode(.chunk(decoded)))
                         try await playbackSink.receive(decoded)
                         events.append(.playback(.chunk(decoded)))
+                        if let diagnostics = playbackDiagnosticsEvent(from: playbackSink) {
+                            events.append(diagnostics)
+                        }
                     }
                 }
             }

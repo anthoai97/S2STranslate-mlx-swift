@@ -55,11 +55,11 @@ HALC_ProxyIOContext.cpp:1623 HALC_ProxyIOContext::IOWorkLoop: skipping cycle due
 
 ## Acceptance criteria
 
-- [ ] Add instrumentation that records generated-audio production rate versus playback consumption rate, including buffer depth over time.
-- [ ] Distinguish model starvation from AVAudio configuration problems.
+- [x] Add instrumentation that records generated-audio production rate versus playback consumption rate, including buffer depth over time.
+- [x] Distinguish model starvation from AVAudio configuration problems.
 - [ ] Confirm whether playback remains smooth when fed the same decoded chunks from an already-buffered/offline source.
 - [ ] Confirm whether real-time playback remains smooth with a synthetic steady 24 kHz mono PCM stream through the same `AVAudioPlaybackSink`.
-- [ ] If starvation is confirmed, document the minimum buffer needed for the current model speed and identify the next performance bottleneck.
+- [x] If starvation is confirmed, document the minimum buffer needed for the current model speed and identify the next performance bottleneck.
 - [ ] If AVAudio configuration is implicated, fix channel/layout/session setup and add a hardware-safe smoke checklist.
 
 ## Suggested investigation plan
@@ -82,6 +82,58 @@ HALC_ProxyIOContext.cpp:1623 HALC_ProxyIOContext::IOWorkLoop: skipping cycle due
    - deferred playback for demo correctness,
    - MLX/runtime performance work,
    - AVAudio engine/session configuration fix.
+
+## Comments
+
+### 2026-06-13
+
+Added playback diagnostics to the playback sink boundary and real AVFoundation sink:
+
+- `PlaybackDiagnosticsSnapshot` records scheduled/completed/pending samples and buffers, pending milliseconds, schedule gap, underrun count, and elapsed milliseconds.
+- `AVAudioPlaybackSink` and `BufferedStreamingAudioPlaybackSink` now expose diagnostics; buffered streaming reports prebuffer depth before wrapped playback starts, then forwards live AVAudio queue depth.
+- Translation, Mimi codec playback, and source playback backends emit playback diagnostics events after delivered chunks.
+- Session observations and the hidden observations panel now expose queued/completed/pending playback duration, schedule gap, and underrun count.
+
+Next device run should compare pending playback milliseconds against decoded/generated duration. If pending depth drains toward zero after the 2s prebuffer, model starvation is implicated. If pending depth stays healthy while audio still chops or channel-map warnings persist, focus on AVAudio session/format configuration.
+
+### 2026-06-13 device log diagnosis
+
+Fresh device logs in `.scratch/hibiki-ios-mlx/issue-28-logs/logs` confirm model starvation as the primary cause of broken voice output:
+
+- Source/sample playback schedules all 115 buffers quickly, grows pending audio to roughly 9.17s, and finishes with `underruns=0`; this shows the `AVAudioPlaybackSink` can play a fully supplied stream without draining.
+- Real-file translation starts playback after the 2s buffered prebuffer, but after buffer 25 each 80ms decoded chunk arrives roughly every 350ms on average.
+- The 2s prebuffer drains by scheduled buffer 31. From then on each new 80ms chunk is played immediately and the queue drains again, ending with `underruns=115`.
+- Post-prebuffer production rate from this run is approximately `80ms / 350ms = 0.23x` realtime. To avoid underruns for this same run by buffering alone would require roughly 33s of initial generated-audio buffer, which defeats the simultaneous-translation goal.
+
+The CoreAudio channel-map/converter warnings still need a cleanup pass, but they are not the dominant explanation for this broken voice run because queue depth reaches zero repeatedly after model generation falls behind playback consumption. The next bottleneck to profile is per-frame model production latency across MLX Mimi encode, Hibiki step/depformer, and MLX Mimi decode.
+
+### 2026-06-13 model-flow benchmark harness
+
+Added an opt-in real-file benchmark under `RealFileFrenchEnglishSmokeTests` for measuring current model-flow production speed without AVAudio playback:
+
+```sh
+S2S_RUN_REAL_FILE_BENCHMARKS=1 swift test --filter RealFileFrenchEnglishSmokeTests
+```
+
+For quick iteration, cap the source and disable tail flush:
+
+```sh
+S2S_RUN_REAL_FILE_BENCHMARKS=1 \
+S2S_REAL_FILE_BENCHMARK_MAX_SOURCE_CHUNKS=20 \
+S2S_REAL_FILE_BENCHMARK_INCLUDE_TAIL=0 \
+swift test --filter RealFileFrenchEnglishSmokeTests
+```
+
+The first 20-chunk local baseline wrote `.scratch/real-file-benchmark/latest/benchmark.md` and measured `0.188x` generated realtime factor. That speed-only run wrote an empty `translation.txt` because it disabled tail flush and stopped before delayed visible text appeared. Stage timing points at Hibiki stepping as the current bottleneck: Mimi encode averaged `31.488ms`, Hibiki step averaged `367.484ms`, and Mimi decode averaged `26.406ms` per frame.
+
+A 40-chunk run with default tail flush wrote `.scratch/real-file-benchmark/text-check/translation.txt` with visible output and measured `0.242x` generated realtime factor:
+
+```sh
+S2S_RUN_REAL_FILE_BENCHMARKS=1 \
+S2S_REAL_FILE_BENCHMARK_OUTPUT_DIR=.scratch/real-file-benchmark/text-check \
+S2S_REAL_FILE_BENCHMARK_MAX_SOURCE_CHUNKS=40 \
+swift test --filter RealFileFrenchEnglishSmokeTests
+```
 
 ## Related files
 
