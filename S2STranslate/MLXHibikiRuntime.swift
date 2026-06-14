@@ -2,20 +2,27 @@ import Foundation
 import MLX
 import Synchronization
 
+public enum MLXHibikiWeightFormat: String, Equatable, Sendable {
+    case q4
+    case pytorchBF16
+}
+
 public struct MLXHibikiRuntimeConfiguration: Equatable, Sendable {
-    public var hiddenScale: Int
+    public var hiddenScale: Double
     public var kvRepeat: Int
     public var positionalEmbedding: String
     public var depformerOutputLayerNorm: Bool
+    public var weightFormat: MLXHibikiWeightFormat
     public var quantizationBits: Int
     public var quantizationGroupSize: Int
     public var codebookCount: Int
 
     nonisolated public init(
-        hiddenScale: Int = 6,
+        hiddenScale: Double = 6,
         kvRepeat: Int = 2,
         positionalEmbedding: String = "rope_concat",
         depformerOutputLayerNorm: Bool = true,
+        weightFormat: MLXHibikiWeightFormat = .q4,
         quantizationBits: Int = 4,
         quantizationGroupSize: Int = 32,
         codebookCount: Int = 16
@@ -24,10 +31,22 @@ public struct MLXHibikiRuntimeConfiguration: Equatable, Sendable {
         self.kvRepeat = kvRepeat
         self.positionalEmbedding = positionalEmbedding
         self.depformerOutputLayerNorm = depformerOutputLayerNorm
+        self.weightFormat = weightFormat
         self.quantizationBits = quantizationBits
         self.quantizationGroupSize = quantizationGroupSize
         self.codebookCount = codebookCount
     }
+
+    public static let hibikiMMobileLiveCandidate = MLXHibikiRuntimeConfiguration(
+        hiddenScale: 4.125,
+        kvRepeat: 1,
+        positionalEmbedding: "rope",
+        depformerOutputLayerNorm: false,
+        weightFormat: .pytorchBF16,
+        quantizationBits: 0,
+        quantizationGroupSize: 0,
+        codebookCount: 8
+    )
 }
 
 public struct MLXHibikiWeightsSummary: Equatable, Sendable {
@@ -174,7 +193,11 @@ public final class MLXHibikiDefaultRuntimeEngine: MLXHibikiRuntimeEngine {
             throw HibikiInferenceError.invalidArtifacts("hibiki weights missing depformer output LayerNorm tensors")
         }
         if let weights {
-            try graphParameterApplier.apply(weights, to: model)
+            try graphParameterApplier.apply(
+                weights,
+                to: model,
+                weightFormat: request.runtimeConfiguration.weightFormat
+            )
         }
 
         self.model = model
@@ -487,7 +510,7 @@ private final class MLXHibikiSequenceState {
 }
 
 struct MLXHibikiModelConfig: Equatable {
-    var hiddenScale: Int
+    var hiddenScale: Double
     var kvRepeat: Int
     var positionalEmbedding: String
     var topology: MLXHibikiModelTopology
@@ -511,18 +534,27 @@ struct MLXHibikiModelConfig: Equatable {
         }
 
         return MLXHibikiModelConfig(
-            hiddenScale: try intValue("hidden_scale", in: dictionary),
-            kvRepeat: try intValue("kv_repeat", in: dictionary),
+            hiddenScale: try numberValue("hidden_scale", in: dictionary),
+            kvRepeat: try optionalIntValue("kv_repeat", in: dictionary) ?? 1,
             positionalEmbedding: try positionalEmbedding(in: dictionary),
             topology: try MLXHibikiModelTopology.load(from: dictionary)
         )
     }
 
     func validate(against expected: MLXHibikiRuntimeConfiguration) throws {
-        guard expected.quantizationBits == 4, expected.quantizationGroupSize == 32 else {
-            throw HibikiInferenceError.invalidArtifacts(
-                "unsupported q4 quantization: bits \(expected.quantizationBits), group size \(expected.quantizationGroupSize)"
-            )
+        switch expected.weightFormat {
+        case .q4:
+            guard expected.quantizationBits == 4, expected.quantizationGroupSize == 32 else {
+                throw HibikiInferenceError.invalidArtifacts(
+                    "unsupported q4 quantization: bits \(expected.quantizationBits), group size \(expected.quantizationGroupSize)"
+                )
+            }
+        case .pytorchBF16:
+            guard expected.quantizationBits == 0, expected.quantizationGroupSize == 0 else {
+                throw HibikiInferenceError.invalidArtifacts(
+                    "unsupported bf16 quantization metadata: bits \(expected.quantizationBits), group size \(expected.quantizationGroupSize)"
+                )
+            }
         }
         guard hiddenScale == expected.hiddenScale else {
             throw HibikiInferenceError.invalidArtifacts(
@@ -547,6 +579,19 @@ struct MLXHibikiModelConfig: Equatable {
             throw HibikiInferenceError.invalidArtifacts("config missing \(key)")
         }
         return value
+    }
+
+    fileprivate static func numberValue(_ key: String, in dictionary: [String: Any]) throws -> Double {
+        guard let value = dictionary[key] else {
+            throw HibikiInferenceError.invalidArtifacts("config missing \(key)")
+        }
+        if let doubleValue = value as? Double {
+            return doubleValue
+        }
+        if let intValue = value as? Int {
+            return Double(intValue)
+        }
+        throw HibikiInferenceError.invalidArtifacts("config \(key) malformed")
     }
 
     fileprivate static func optionalIntValue(_ key: String, in dictionary: [String: Any]) throws -> Int? {
@@ -609,6 +654,16 @@ struct MLXHibikiModelConfig: Equatable {
         return value
     }
 
+    fileprivate static func optionalStringValue(_ key: String, in dictionary: [String: Any]) throws -> String? {
+        guard let value = dictionary[key], !(value is NSNull) else {
+            return nil
+        }
+        guard let stringValue = value as? String else {
+            throw HibikiInferenceError.invalidArtifacts("config \(key) malformed")
+        }
+        return stringValue
+    }
+
     fileprivate static func intArrayValue(_ key: String, in dictionary: [String: Any]) throws -> [Int] {
         guard let value = dictionary[key] as? [Int] else {
             throw HibikiInferenceError.invalidArtifacts("config missing \(key)")
@@ -648,13 +703,14 @@ struct MLXHibikiModelTopology: Equatable {
     var generatedCodebookCount: Int
     var audioDelays: [Int]
     var depformerWeightsPerStepSchedule: [Int]?
+    var depformerMultiLinear: Bool
 
     var sourceCodebookCount: Int {
         audioCodebookCount - generatedCodebookCount
     }
 
     static func load(from dictionary: [String: Any]) throws -> MLXHibikiModelTopology {
-        let hiddenScale = try MLXHibikiModelConfig.intValue("hidden_scale", in: dictionary)
+        let hiddenScale = try MLXHibikiModelConfig.numberValue("hidden_scale", in: dictionary)
         let mainDimension = try MLXHibikiModelConfig.intValue("dim", in: dictionary)
         let depformerDimension = try MLXHibikiModelConfig.intValue("depformer_dim", in: dictionary)
         let generatedCodebookCount = try MLXHibikiModelConfig.intValue("dep_q", in: dictionary)
@@ -685,8 +741,8 @@ struct MLXHibikiModelTopology: Equatable {
                 context: try MLXHibikiModelConfig.intValue("context", in: dictionary),
                 maxPeriod: try MLXHibikiModelConfig.intFromNumber("max_period", in: dictionary),
                 maxSequenceLength: 4_096,
-                kvRepeat: try MLXHibikiModelConfig.intValue("kv_repeat", in: dictionary),
-                feedForwardDimension: hiddenScale * mainDimension,
+                kvRepeat: try MLXHibikiModelConfig.optionalIntValue("kv_repeat", in: dictionary) ?? 1,
+                feedForwardDimension: Int((hiddenScale * Double(mainDimension)).rounded()),
                 convLayout: false,
                 usesRotatingKVCache: true
             ),
@@ -704,7 +760,9 @@ struct MLXHibikiModelTopology: Equatable {
                 ),
                 usesConvBias: true,
                 gating: true,
-                norm: try norm(MLXHibikiModelConfig.stringValue("depformer_norm", in: dictionary)),
+                norm: try norm(
+                    MLXHibikiModelConfig.optionalStringValue("depformer_norm", in: dictionary) ?? "rms_norm"
+                ),
                 context: try MLXHibikiModelConfig.optionalIntValue("depformer_context", in: dictionary)
                     ?? generatedCodebookCount,
                 maxPeriod: try MLXHibikiModelConfig.optionalIntValue("depformer_max_period", in: dictionary) ?? 8,
@@ -713,7 +771,7 @@ struct MLXHibikiModelTopology: Equatable {
                 feedForwardDimension: try MLXHibikiModelConfig.optionalIntValue(
                     "depformer_dim_feedforward",
                     in: dictionary
-                ) ?? hiddenScale * depformerDimension,
+                ) ?? Int((hiddenScale * Double(depformerDimension)).rounded()),
                 convLayout: false,
                 usesRotatingKVCache: false
             ),
@@ -727,7 +785,11 @@ struct MLXHibikiModelTopology: Equatable {
             depformerWeightsPerStepSchedule: try MLXHibikiModelConfig.optionalIntArrayValue(
                 "depformer_weights_per_step_schedule",
                 in: dictionary
-            )
+            ),
+            depformerMultiLinear: try MLXHibikiModelConfig.optionalBoolValue(
+                "depformer_multi_linear",
+                in: dictionary
+            ) ?? false
         )
     }
 

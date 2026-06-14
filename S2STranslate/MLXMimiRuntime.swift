@@ -32,6 +32,16 @@ public struct MLXMimiRuntimeConfiguration: Equatable, Sendable {
         samplesPerFrame: 1_920,
         quantizerBins: 2_048
     )
+
+    public static func mimi202407(codebookCount: Int) -> MLXMimiRuntimeConfiguration {
+        MLXMimiRuntimeConfiguration(
+            sampleRate: 24_000,
+            frameRate: 12.5,
+            codebookCount: codebookCount,
+            samplesPerFrame: 1_920,
+            quantizerBins: 2_048
+        )
+    }
 }
 
 public enum MimiRuntimeError: Error, Equatable, Sendable {
@@ -321,9 +331,9 @@ public final class MLXMimiRuntime: @unchecked Sendable {
                 "frameRate expected 12.5, got \(configuration.frameRate)"
             )
         }
-        guard configuration.codebookCount == 16 else {
+        guard (1...16).contains(configuration.codebookCount) else {
             throw MimiRuntimeError.incompatibleConfiguration(
-                "codebookCount expected 16, got \(configuration.codebookCount)"
+                "codebookCount expected 1...16, got \(configuration.codebookCount)"
             )
         }
         guard configuration.quantizerBins == 2_048 else {

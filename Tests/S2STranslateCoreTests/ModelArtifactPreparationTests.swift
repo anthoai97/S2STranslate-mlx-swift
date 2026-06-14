@@ -28,6 +28,83 @@ struct ModelArtifactPreparationTests {
         ])
     }
 
+    @Test("Hibiki-M mobile-live candidate manifest preserves q4 and names official artifacts")
+    func hibikiMMobileLiveCandidateManifestNamesOfficialArtifacts() {
+        let q4 = ModelRuntimeManifest.hibikiQ4Default
+        let hibikiM = ModelRuntimeManifest.hibikiMMobileLiveCandidate
+
+        #expect(q4.modelRepo == "anquachdev/hbk-zero-3b-mlx-q4")
+        #expect(q4.requiredFiles.contains(
+            ModelArtifactRequirement(role: "hibikiWeights", fileName: "hibiki.q4.safetensors")
+        ))
+
+        #expect(hibikiM.modelRepo == "kyutai/hibiki-1b-pytorch-bf16")
+        #expect(hibikiM.revision == "65dee9b6a682393d4e9b193ccbe314e401e230c9")
+        #expect(hibikiM.requiredFiles == [
+            ModelArtifactRequirement(role: "architectureConfig", fileName: "config.json"),
+            ModelArtifactRequirement(role: "hibikiWeights", fileName: "hibikim-pytorch-37c6cfd6@200.safetensors"),
+            ModelArtifactRequirement(role: "mimiWeights", fileName: "mimi-pytorch-e351c8d8@125.safetensors"),
+            ModelArtifactRequirement(role: "tokenizer", fileName: "tokenizer_spm_48k_multi6_2.model"),
+        ])
+    }
+
+    @Test("Hibiki-M mobile-live candidate preflight prepares official required artifacts")
+    func hibikiMMobileLiveCandidatePreflightPreparesArtifacts() async {
+        let manifest = ModelRuntimeManifest.hibikiMMobileLiveCandidate
+        let provider = RecordingArtifactProvider(
+            prepared: Dictionary(uniqueKeysWithValues: manifest.requiredFiles.map { requirement in
+                (
+                    requirement.fileName,
+                    ModelArtifactHandle(
+                        fileName: requirement.fileName,
+                        location: "prepared://\(requirement.fileName)",
+                        byteCount: 10
+                    )
+                )
+            })
+        )
+        let preparer = ModelArtifactPreparer(manifest: manifest, provider: provider)
+
+        let result = await preparer.prepare()
+        let requests = await provider.requests()
+
+        #expect(result.succeeded)
+        #expect(result.artifacts?.manifest == manifest)
+        #expect(result.artifacts?.files.map(\.role) == [
+            "architectureConfig",
+            "hibikiWeights",
+            "mimiWeights",
+            "tokenizer",
+        ])
+        #expect(requests.contains(
+            .prepared(
+                fileName: "hibikim-pytorch-37c6cfd6@200.safetensors",
+                repo: "kyutai/hibiki-1b-pytorch-bf16",
+                revision: "65dee9b6a682393d4e9b193ccbe314e401e230c9"
+            )
+        ))
+    }
+
+    @Test("Hibiki-M mobile-live candidate preflight reports missing official artifacts")
+    func hibikiMMobileLiveCandidatePreflightReportsMissingArtifact() async {
+        let manifest = ModelRuntimeManifest.hibikiMMobileLiveCandidate
+        let provider = RecordingArtifactProvider(
+            prepared: [
+                "config.json": ModelArtifactHandle(
+                    fileName: "config.json",
+                    location: "prepared://config.json",
+                    byteCount: 10
+                ),
+            ]
+        )
+        let preparer = ModelArtifactPreparer(manifest: manifest, provider: provider)
+
+        let result = await preparer.prepare()
+
+        #expect(result.failure == .missing("hibikim-pytorch-37c6cfd6@200.safetensors"))
+        #expect(!result.succeeded)
+    }
+
     @Test("cached artifacts are used before first-run preparation")
     func cacheHitDoesNotPrepareArtifact() async {
         let provider = RecordingArtifactProvider(

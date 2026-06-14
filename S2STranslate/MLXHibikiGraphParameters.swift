@@ -49,8 +49,21 @@ struct MLXHibikiGraphParameterApplier {
         self.quantization = quantization
     }
 
-    func apply(_ weights: [String: MLXMimiWeightTensor], to model: MLXHibikiLanguageModel) throws {
-        let denseTargets = Self.denseTargets(for: model)
+    func apply(
+        _ weights: [String: MLXMimiWeightTensor],
+        to model: MLXHibikiLanguageModel,
+        weightFormat: MLXHibikiWeightFormat = .q4
+    ) throws {
+        switch weightFormat {
+        case .q4:
+            try applyQ4(weights, to: model)
+        case .pytorchBF16:
+            try applyDense(weights, targets: Self.denseBF16Targets(for: model))
+        }
+    }
+
+    private func applyQ4(_ weights: [String: MLXMimiWeightTensor], to model: MLXHibikiLanguageModel) throws {
+        let denseTargets = Self.q4DenseTargets(for: model)
         let quantizedTargets = Self.quantizedTargets(for: model, quantization: quantization)
         let expectedShapes = Self.expectedShapes(
             denseTargets: denseTargets,
@@ -109,12 +122,58 @@ struct MLXHibikiGraphParameterApplier {
         }
     }
 
+    private func applyDense(
+        _ weights: [String: MLXMimiWeightTensor],
+        targets: [MLXHibikiDenseParameterTarget]
+    ) throws {
+        let targetsByKey = Dictionary(uniqueKeysWithValues: targets.map { ($0.key, $0) })
+        let expectedShapes = targetsByKey.mapValues(\.expectedShape)
+        let keysToRequire = requiredKeys ?? Set(expectedShapes.keys)
+
+        for key in keysToRequire where weights[key] == nil {
+            throw MLXMimiWeightLoadError.missingKey(key)
+        }
+
+        for (key, tensor) in weights {
+            guard let expectedShape = expectedShapes[key] else {
+                if allowsUnexpectedKeys {
+                    continue
+                }
+                throw MLXMimiWeightLoadError.unexpectedKey(key)
+            }
+
+            guard tensor.shape == expectedShape else {
+                throw MLXMimiWeightLoadError.incompatibleShape(
+                    key: key,
+                    expected: expectedShape,
+                    actual: tensor.shape
+                )
+            }
+        }
+
+        guard requiresArrayPayload else { return }
+
+        for target in targets {
+            guard let tensor = weights[target.key] else { continue }
+            guard let array = tensor.array else {
+                throw MLXMimiWeightLoadError.loadFailed(
+                    "Mapped tensor has no MLX array payload: \(target.key)"
+                )
+            }
+            target.assign(array)
+        }
+    }
+
     static func expectedShapes(
         for model: MLXHibikiLanguageModel,
-        quantization: MLXHibikiQuantizationSpec = MLXHibikiQuantizationSpec()
+        quantization: MLXHibikiQuantizationSpec = MLXHibikiQuantizationSpec(),
+        weightFormat: MLXHibikiWeightFormat = .q4
     ) -> [String: [Int]] {
-        expectedShapes(
-            denseTargets: denseTargets(for: model),
+        if weightFormat == .pytorchBF16 {
+            return Dictionary(uniqueKeysWithValues: denseBF16Targets(for: model).map { ($0.key, $0.expectedShape) })
+        }
+        return expectedShapes(
+            denseTargets: q4DenseTargets(for: model),
             quantizedTargets: quantizedTargets(for: model, quantization: quantization)
         )
     }
@@ -132,13 +191,15 @@ struct MLXHibikiGraphParameterApplier {
         return shapes
     }
 
-    private static func denseTargets(for model: MLXHibikiLanguageModel) -> [MLXHibikiDenseParameterTarget] {
+    private static func q4DenseTargets(for model: MLXHibikiLanguageModel) -> [MLXHibikiDenseParameterTarget] {
         var targets: [MLXHibikiDenseParameterTarget] = []
         appendTransformerNormTargets(prefix: "out_norm", norm: model.outNorm, includeLayerNormBias: false, to: &targets)
         appendTransformerDenseTargets(prefix: "transformer", transformer: model.transformer, to: &targets)
         for (sliceIndex, slice) in model.depformerSlices.enumerated() {
             let prefix = "depformer.slices.\(sliceIndex)"
-            appendLayerNormTargets(prefix: "\(prefix).norm", norm: slice.norm, to: &targets)
+            if let norm = slice.norm {
+                appendLayerNormTargets(prefix: "\(prefix).norm", norm: norm, to: &targets)
+            }
             appendTransformerDenseTargets(
                 prefix: "\(prefix).transformer",
                 transformer: slice.transformer,
@@ -146,6 +207,112 @@ struct MLXHibikiGraphParameterApplier {
             )
         }
         return targets
+    }
+
+    private static func denseBF16Targets(for model: MLXHibikiLanguageModel) -> [MLXHibikiDenseParameterTarget] {
+        var targets: [MLXHibikiDenseParameterTarget] = []
+        appendDenseEmbeddingTarget(key: "text_emb.weight", embedding: model.textEmbedding, to: &targets)
+        appendDenseLinearTarget(key: "text_linear.weight", linear: model.textLinear, to: &targets)
+        appendAlphaNormTarget(key: "out_norm.alpha", norm: model.outNorm, to: &targets)
+        for (index, embedding) in model.audioEmbeddings.enumerated() {
+            appendDenseEmbeddingTarget(key: "emb.\(index).weight", embedding: embedding, to: &targets)
+        }
+        appendDenseBF16TransformerTargets(prefix: "transformer", transformer: model.transformer, to: &targets)
+        appendDenseBF16DepformerTargets(model: model, to: &targets)
+        return targets
+    }
+
+    private static func appendDenseBF16DepformerTargets(
+        model: MLXHibikiLanguageModel,
+        to targets: inout [MLXHibikiDenseParameterTarget]
+    ) {
+        guard let firstSlice = model.depformerSlices.first else { return }
+        appendDenseEmbeddingTarget(key: "depformer_text_emb.weight", embedding: firstSlice.embedding, to: &targets)
+        for (sliceIndex, slice) in model.depformerSlices.enumerated() {
+            appendDenseLinearTarget(key: "depformer_in.\(sliceIndex).weight", linear: slice.linearIn, to: &targets)
+            appendDenseLinearTarget(key: "linears.\(sliceIndex).weight", linear: slice.linearOut, to: &targets)
+            if sliceIndex > 0 {
+                appendDenseEmbeddingTarget(
+                    key: "depformer_emb.\(sliceIndex - 1).weight",
+                    embedding: slice.embedding,
+                    to: &targets
+                )
+            }
+        }
+
+        for layerIndex in firstSlice.transformer.layers.indices {
+            let firstLayer = firstSlice.transformer.layers[layerIndex]
+            let qkvShape = firstLayer.selfAttention.qkvProjection.weightShape
+            let outShape = firstLayer.selfAttention.outputProjection.weightShape
+
+            targets.append(
+                MLXHibikiDenseParameterTarget(
+                    key: "depformer.layers.\(layerIndex).self_attn.in_proj_weight",
+                    expectedShape: [model.depformerSlices.count * qkvShape[0], qkvShape[1]],
+                    assign: { packed in
+                        for (sliceIndex, slice) in model.depformerSlices.enumerated() {
+                            let start = sliceIndex * qkvShape[0]
+                            let end = start + qkvShape[0]
+                            slice.transformer.layers[layerIndex].selfAttention.qkvProjection.weight =
+                                packed[start..<end, 0...]
+                        }
+                    }
+                )
+            )
+            targets.append(
+                MLXHibikiDenseParameterTarget(
+                    key: "depformer.layers.\(layerIndex).self_attn.out_proj.weight",
+                    expectedShape: [model.depformerSlices.count * outShape[0], outShape[1]],
+                    assign: { packed in
+                        for (sliceIndex, slice) in model.depformerSlices.enumerated() {
+                            let start = sliceIndex * outShape[0]
+                            let end = start + outShape[0]
+                            slice.transformer.layers[layerIndex].selfAttention.outputProjection.weight =
+                                packed[start..<end, 0...]
+                        }
+                    }
+                )
+            )
+
+            targets.append(
+                MLXHibikiDenseParameterTarget(
+                    key: "depformer.layers.\(layerIndex).norm1.alpha",
+                    expectedShape: [1, 1, firstLayer.norm1.rmsNorm?.dimensions ?? firstLayer.norm1.layerNorm!.dimensions],
+                    assign: { array in
+                        for slice in model.depformerSlices {
+                            assignAlphaNorm(array, to: slice.transformer.layers[layerIndex].norm1)
+                        }
+                    }
+                )
+            )
+            targets.append(
+                MLXHibikiDenseParameterTarget(
+                    key: "depformer.layers.\(layerIndex).norm2.alpha",
+                    expectedShape: [1, 1, firstLayer.norm2.rmsNorm?.dimensions ?? firstLayer.norm2.layerNorm!.dimensions],
+                    assign: { array in
+                        for slice in model.depformerSlices {
+                            assignAlphaNorm(array, to: slice.transformer.layers[layerIndex].norm2)
+                        }
+                    }
+                )
+            )
+
+            for (sliceIndex, slice) in model.depformerSlices.enumerated() {
+                let layer = slice.transformer.layers[layerIndex]
+                if let gated = layer.feedForward.gated {
+                    appendDenseLinearTarget(
+                        key: "depformer.layers.\(layerIndex).gating.\(sliceIndex).linear_in.weight",
+                        linear: gated.linearIn,
+                        to: &targets
+                    )
+                    appendDenseLinearTarget(
+                        key: "depformer.layers.\(layerIndex).gating.\(sliceIndex).linear_out.weight",
+                        linear: gated.linearOut,
+                        to: &targets
+                    )
+                }
+            }
+        }
     }
 
     private static func quantizedTargets(
@@ -223,6 +390,36 @@ struct MLXHibikiGraphParameterApplier {
         }
     }
 
+    private static func appendDenseBF16TransformerTargets(
+        prefix: String,
+        transformer: MLXMimiTransformer,
+        to targets: inout [MLXHibikiDenseParameterTarget]
+    ) {
+        for (layerIndex, layer) in transformer.layers.enumerated() {
+            let layerPrefix = "\(prefix).layers.\(layerIndex)"
+            appendAlphaNormTarget(key: "\(layerPrefix).norm1.alpha", norm: layer.norm1, to: &targets)
+            appendAlphaNormTarget(key: "\(layerPrefix).norm2.alpha", norm: layer.norm2, to: &targets)
+            appendDenseLinearTarget(
+                key: "\(layerPrefix).self_attn.in_proj_weight",
+                linear: layer.selfAttention.qkvProjection,
+                to: &targets
+            )
+            appendDenseLinearTarget(
+                key: "\(layerPrefix).self_attn.out_proj.weight",
+                linear: layer.selfAttention.outputProjection,
+                to: &targets
+            )
+            if let gated = layer.feedForward.gated {
+                appendDenseLinearTarget(key: "\(layerPrefix).gating.linear_in.weight", linear: gated.linearIn, to: &targets)
+                appendDenseLinearTarget(key: "\(layerPrefix).gating.linear_out.weight", linear: gated.linearOut, to: &targets)
+            }
+            if let ungated = layer.feedForward.ungated {
+                appendDenseLinearTarget(key: "\(layerPrefix).gating.linear1.weight", linear: ungated.linear1, to: &targets)
+                appendDenseLinearTarget(key: "\(layerPrefix).gating.linear2.weight", linear: ungated.linear2, to: &targets)
+            }
+        }
+    }
+
     private static func appendTransformerQuantizedTargets(
         prefix: String,
         transformer: MLXMimiTransformer,
@@ -271,6 +468,58 @@ struct MLXHibikiGraphParameterApplier {
                     to: &targets
                 )
             }
+        }
+    }
+
+    private static func appendDenseEmbeddingTarget(
+        key: String,
+        embedding: MLXHibikiEmbedding,
+        to targets: inout [MLXHibikiDenseParameterTarget]
+    ) {
+        targets.append(
+            MLXHibikiDenseParameterTarget(
+                key: key,
+                expectedShape: embedding.weightShape,
+                assign: { embedding.weight = $0 }
+            )
+        )
+    }
+
+    private static func appendDenseLinearTarget(
+        key: String,
+        linear: MLXMimiLinear,
+        to targets: inout [MLXHibikiDenseParameterTarget]
+    ) {
+        targets.append(
+            MLXHibikiDenseParameterTarget(
+                key: key,
+                expectedShape: linear.weightShape,
+                assign: { linear.weight = $0 }
+            )
+        )
+    }
+
+    private static func appendAlphaNormTarget(
+        key: String,
+        norm: MLXMimiTransformerNorm,
+        to targets: inout [MLXHibikiDenseParameterTarget]
+    ) {
+        let dimensions = norm.rmsNorm?.dimensions ?? norm.layerNorm!.dimensions
+        targets.append(
+            MLXHibikiDenseParameterTarget(
+                key: key,
+                expectedShape: [1, 1, dimensions],
+                assign: { assignAlphaNorm($0, to: norm) }
+            )
+        )
+    }
+
+    private static func assignAlphaNorm(_ array: MLXArray, to norm: MLXMimiTransformerNorm) {
+        if let rmsNorm = norm.rmsNorm {
+            rmsNorm.weight = array.reshaped(rmsNorm.weightShape)
+        }
+        if let layerNorm = norm.layerNorm {
+            layerNorm.weight = array.reshaped(layerNorm.weightShape)
         }
     }
 

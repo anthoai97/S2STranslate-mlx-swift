@@ -4,7 +4,7 @@ import Testing
 
 @testable import S2STranslateCore
 
-@Suite("MLX Hibiki Runtime")
+@Suite("MLX Hibiki Runtime", .serialized)
 struct MLXHibikiRuntimeTests {
     @Test("MLX Hibiki session initializes from prepared artifacts and steps through engine seam")
     func mlxHibikiSessionInitializesAndStepsThroughEngineSeam() async throws {
@@ -215,6 +215,7 @@ struct MLXHibikiRuntimeTests {
             0, 1, 2, 3, 4, 5, 6, 7,
             8, 8, 8, 8, 8, 8, 8, 8,
         ])
+        #expect(!config.topology.depformerMultiLinear)
     }
 
     @Test("MLX Hibiki language model owns real graph shell shapes")
@@ -238,8 +239,8 @@ struct MLXHibikiRuntimeTests {
         #expect(model.depformerSlices[1].embedding.weightShape == [2_049, 1_024])
         #expect(model.depformerSlices[0].linearIn.weightShape == [1_024, 2_048])
         #expect(model.depformerSlices[0].linearOut.weightShape == [2_048, 1_024])
-        #expect(model.depformerSlices[0].norm.weightShape == [1_024])
-        #expect(model.depformerSlices[0].norm.biasShape == [1_024])
+        #expect(model.depformerSlices[0].norm?.weightShape == [1_024])
+        #expect(model.depformerSlices[0].norm?.biasShape == [1_024])
         #expect(model.depformerSlices[0].transformer.layers.count == 6)
         #expect(model.depformerSlices[0].transformer.layers[0].selfAttention.qkvProjection.weightShape == [3_072, 1_024])
     }
@@ -329,8 +330,66 @@ struct MLXHibikiRuntimeTests {
         #expect(model.textEmbedding.quantizedParameters?.scales.shape == [16, 2])
         #expect(model.textEmbedding.quantizedParameters?.groupSize == 4)
         #expect(model.outNorm.rmsNorm?.weight.shape == [8])
-        #expect(model.depformerSlices[0].norm.weight.shape == [8])
-        #expect(model.depformerSlices[0].norm.bias.shape == [8])
+        #expect(model.depformerSlices[0].norm?.weight.shape == [8])
+        #expect(model.depformerSlices[0].norm?.bias.shape == [8])
+    }
+
+    @Test("MLX Hibiki graph parameter applier maps dense Hibiki-M packed Depformer layout")
+    func mlxHibikiGraphParameterApplierMapsDenseHibikiMPackedDepformerLayout() throws {
+        let model = MLXHibikiLanguageModel(topology: tinyHibikiMultiLinearTopology())
+        let shapes = MLXHibikiGraphParameterApplier.expectedShapes(
+            for: model,
+            weightFormat: .pytorchBF16
+        )
+
+        #expect(shapes["depformer_text_emb.weight"] == [16, 8])
+        #expect(shapes["depformer_emb.0.weight"] == [16, 8])
+        #expect(shapes["depformer_in.1.weight"] == [8, 8])
+        #expect(shapes["linears.1.weight"] == [15, 8])
+        #expect(shapes["depformer.layers.0.self_attn.in_proj_weight"] == [48, 8])
+        #expect(shapes["depformer.layers.0.self_attn.out_proj.weight"] == [16, 8])
+        #expect(shapes["depformer.layers.0.gating.1.linear_out.weight"] == [8, 16])
+        #expect(model.depformerSlices[0].norm == nil)
+
+        let requiredKeys: Set<String> = [
+            "depformer.layers.0.self_attn.in_proj_weight",
+            "depformer.layers.0.self_attn.out_proj.weight",
+            "depformer.layers.0.norm1.alpha",
+            "depformer.layers.0.norm2.alpha",
+            "depformer.layers.0.gating.1.linear_out.weight",
+            "depformer_in.1.weight",
+            "linears.1.weight",
+            "depformer_emb.0.weight",
+        ]
+        let weights: [String: MLXMimiWeightTensor] = [
+            "depformer.layers.0.self_attn.in_proj_weight": mlxTensor([48, 8]),
+            "depformer.layers.0.self_attn.out_proj.weight": mlxTensor([16, 8]),
+            "depformer.layers.0.norm1.alpha": mlxTensor([1, 1, 8]),
+            "depformer.layers.0.norm2.alpha": mlxTensor([1, 1, 8]),
+            "depformer.layers.0.gating.1.linear_out.weight": mlxTensor([8, 16]),
+            "depformer_in.1.weight": mlxTensor([8, 8]),
+            "linears.1.weight": mlxTensor([15, 8]),
+            "depformer_emb.0.weight": mlxTensor([16, 8]),
+        ]
+
+        try MLXHibikiGraphParameterApplier(requiredKeys: requiredKeys)
+            .apply(weights, to: model, weightFormat: .pytorchBF16)
+
+        #expect(
+            model.depformerSlices[1]
+                .transformer.layers[0]
+                .selfAttention.qkvProjection.weight.shape == [24, 8]
+        )
+        #expect(
+            model.depformerSlices[1]
+                .transformer.layers[0]
+                .selfAttention.outputProjection.weight.shape == [8, 8]
+        )
+        #expect(
+            model.depformerSlices[1]
+                .transformer.layers[0]
+                .feedForward.gated?.linearOut.weight.shape == [8, 16]
+        )
     }
 
     @Test("MLX Hibiki default engine rejects missing architecture deltas")
@@ -364,6 +423,33 @@ struct MLXHibikiRuntimeTests {
             throws: HibikiInferenceError.invalidArtifacts("source codebook count expected 16, got 17")
         ) {
             try engine.load(request: request)
+        }
+    }
+
+    @Test("MLX Hibiki default engine surfaces official Hibiki-M compatibility delta")
+    func mlxHibikiDefaultEngineSurfacesOfficialHibikiMCompatibilityDelta() throws {
+        let artifacts = try preparedHibikiArtifacts(
+            configJSON: hibikiMOfficialConfigJSON(),
+            manifest: .hibikiMMobileLiveCandidate
+        )
+        let request = try makeLoadRequest(
+            artifacts: artifacts,
+            runtimeConfiguration: .hibikiMMobileLiveCandidate
+        )
+        let engine = MLXHibikiDefaultRuntimeEngine { _ in
+            MLXHibikiWeightsSummary(tensorCount: 1, hasDepformerOutputLayerNorms: true)
+        }
+
+        try engine.load(request: request)
+
+        #expect(
+            throws: HibikiInferenceError.unavailable("Hibiki MLX model step graph not implemented")
+        ) {
+            try engine.step(
+                sourceAudioTokens: sourceTokenFrame(frameIndex: 0),
+                frameIndex: 0,
+                configuration: HibikiGenerationConfiguration()
+            )
         }
     }
 
@@ -703,17 +789,22 @@ private final class FakeRealBackendMimiRuntimeEngine: MLXMimiRuntimeEngine, @unc
     }
 }
 
-private func preparedHibikiArtifacts(configJSON: String) throws -> PreparedModelArtifacts {
+private func preparedHibikiArtifacts(
+    configJSON: String,
+    manifest: ModelRuntimeManifest = .hibikiQ4Default
+) throws -> PreparedModelArtifacts {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
+    let hibikiWeightsFileName = manifest.requiredFiles.first { $0.role == "hibikiWeights" }?.fileName
+        ?? "hibiki.q4.safetensors"
     let configURL = directory.appendingPathComponent("config.json")
-    let weightsURL = directory.appendingPathComponent("hibiki.q4.safetensors")
+    let weightsURL = directory.appendingPathComponent(hibikiWeightsFileName)
     let mimiURL = directory.appendingPathComponent("mimi-pytorch-e351c8d8@125.safetensors")
     let tokenizerURL = directory.appendingPathComponent("tokenizer_spm_48k_multi6_2.model")
     try configJSON.data(using: .utf8)!.write(to: configURL)
-    try Data("fake q4 weights".utf8).write(to: weightsURL)
+    try Data("fake hibiki weights".utf8).write(to: weightsURL)
     try Data("fake mimi weights".utf8).write(to: mimiURL)
     try sentencePieceModelData(
         pieces: [
@@ -728,10 +819,10 @@ private func preparedHibikiArtifacts(configJSON: String) throws -> PreparedModel
     .write(to: tokenizerURL)
 
     return PreparedModelArtifacts(
-        manifest: .hibikiQ4Default,
+        manifest: manifest,
         files: [
             PreparedModelArtifact(role: "architectureConfig", fileName: "config.json", location: configURL.path, source: .prepared),
-            PreparedModelArtifact(role: "hibikiWeights", fileName: "hibiki.q4.safetensors", location: weightsURL.path, source: .prepared),
+            PreparedModelArtifact(role: "hibikiWeights", fileName: hibikiWeightsFileName, location: weightsURL.path, source: .prepared),
             PreparedModelArtifact(role: "mimiWeights", fileName: "mimi-pytorch-e351c8d8@125.safetensors", location: mimiURL.path, source: .prepared),
             PreparedModelArtifact(role: "tokenizer", fileName: "tokenizer_spm_48k_multi6_2.model", location: tokenizerURL.path, source: .prepared),
         ]
@@ -768,7 +859,10 @@ private func protobufVarint(_ value: Int) -> [UInt8] {
     return bytes
 }
 
-private func makeLoadRequest(artifacts: PreparedModelArtifacts) throws -> MLXHibikiLoadRequest {
+private func makeLoadRequest(
+    artifacts: PreparedModelArtifacts,
+    runtimeConfiguration: MLXHibikiRuntimeConfiguration = MLXHibikiRuntimeConfiguration()
+) throws -> MLXHibikiLoadRequest {
     let files = Dictionary(uniqueKeysWithValues: artifacts.files.map { ($0.role, $0) })
     return MLXHibikiLoadRequest(
         configURL: URL(fileURLWithPath: files["architectureConfig"]!.location),
@@ -776,7 +870,7 @@ private func makeLoadRequest(artifacts: PreparedModelArtifacts) throws -> MLXHib
         tokenizerURL: URL(fileURLWithPath: files["tokenizer"]!.location),
         artifactCount: artifacts.files.count,
         modelRevision: artifacts.manifest.revision,
-        runtimeConfiguration: MLXHibikiRuntimeConfiguration()
+        runtimeConfiguration: runtimeConfiguration
     )
 }
 
@@ -830,8 +924,18 @@ private func tinyHibikiTopology() -> MLXHibikiModelTopology {
         audioCodebookCount: 2,
         generatedCodebookCount: 1,
         audioDelays: [0, 0],
-        depformerWeightsPerStepSchedule: nil
+        depformerWeightsPerStepSchedule: nil,
+        depformerMultiLinear: false
     )
+}
+
+private func tinyHibikiMultiLinearTopology() -> MLXHibikiModelTopology {
+    var topology = tinyHibikiTopology()
+    topology.audioCodebookCount = 4
+    topology.generatedCodebookCount = 2
+    topology.audioDelays = [0, 0, 0, 0]
+    topology.depformerMultiLinear = true
+    return topology
 }
 
 private func tinyConfigJSON() -> String {
@@ -924,6 +1028,68 @@ private func validConfigJSON(
       "text_card_out": null,
       "conditioners": {},
       "cross_attention": false
+    }
+    """
+}
+
+private func hibikiMOfficialConfigJSON() -> String {
+    """
+    {
+      "card": 2048,
+      "n_q": 16,
+      "dep_q": 8,
+      "delays": [
+        0,
+        0,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        0,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "dim": 2048,
+      "text_card": 48000,
+      "num_heads": 16,
+      "num_layers": 16,
+      "hidden_scale": 4.125,
+      "causal": true,
+      "layer_scale": null,
+      "context": 1500,
+      "max_period": 100000.0,
+      "gating": "silu",
+      "norm": "rms_norm_f32",
+      "positional_embedding": "rope",
+      "depformer_dim": 1024,
+      "depformer_num_heads": 16,
+      "depformer_num_layers": 6,
+      "depformer_dim_feedforward": null,
+      "depformer_multi_linear": true,
+      "depformer_pos_emb": "none",
+      "conditioners": {
+        "description": {
+          "type": "lut"
+        }
+      },
+      "fuser": {
+        "sum": [
+          "description"
+        ]
+      },
+      "cross_attention": false,
+      "model_type": "hibiki",
+      "mimi_name": "mimi-pytorch-e351c8d8@125.safetensors",
+      "tokenizer_name": "tokenizer_spm_48k_multi6_2.model",
+      "moshi_name": "hibikim-pytorch-37c6cfd6@200.safetensors"
     }
     """
 }

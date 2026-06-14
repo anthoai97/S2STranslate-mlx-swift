@@ -14,27 +14,35 @@ struct RealFileFrenchEnglishSmokeTests {
             return
         }
 
+        let profile = realFileModelProfile(environment: environment)
         let weightsDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(
-                environment["S2S_REAL_FILE_SMOKE_WEIGHTS_DIR"] ?? "ref/hibiki-zero-mlx/weights",
+                environment["S2S_REAL_FILE_SMOKE_WEIGHTS_DIR"] ?? profile.defaultWeightsDirectory,
                 isDirectory: true
         )
-        let artifacts = try localHibikiArtifacts(weightsDirectory: weightsDirectory)
+        let artifacts = try localHibikiArtifacts(weightsDirectory: weightsDirectory, profile: profile)
         let playbackSink = BufferedPlaybackSink()
         let session = ExperimentSession(
             backend: RealFileHibikiTranslationExperimentBackend(
                 artifactPreparer: ModelArtifactPreparer(
-                    manifest: .hibikiQ4Default,
+                    manifest: profile.manifest,
                     provider: try LocalSmokeArtifactProvider(artifacts: artifacts)
                 ),
                 audioSource: smokeAudioSource(environment: environment),
+                inferenceSession: MLXHibikiInferenceSession(
+                    runtimeConfiguration: profile.hibikiRuntimeConfiguration
+                ),
                 playbackSink: playbackSink,
                 generationConfiguration: HibikiGenerationConfiguration(
                     textTemperature: 0.4,
                     textTopK: 25,
                     tailSilenceFrameCount: 100,
                     postInputPaddingStopFrameCount: 12
-                )
+                ),
+                mimiRuntimeLoader: { artifacts in
+                    try MLXMimiRuntimeLoader(configuration: profile.mimiRuntimeConfiguration)
+                        .load(from: artifacts)
+                }
             )
         )
 
@@ -73,12 +81,13 @@ struct RealFileFrenchEnglishSmokeTests {
             return
         }
 
+        let profile = realFileModelProfile(environment: environment)
         let weightsDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
             .appendingPathComponent(
-                environment["S2S_REAL_FILE_SMOKE_WEIGHTS_DIR"] ?? "ref/hibiki-zero-mlx/weights",
+                environment["S2S_REAL_FILE_SMOKE_WEIGHTS_DIR"] ?? profile.defaultWeightsDirectory,
                 isDirectory: true
         )
-        let artifacts = try localHibikiArtifacts(weightsDirectory: weightsDirectory)
+        let artifacts = try localHibikiArtifacts(weightsDirectory: weightsDirectory, profile: profile)
         let generationConfiguration = HibikiGenerationConfiguration(
             textTemperature: 0.4,
             textTopK: 25,
@@ -87,11 +96,12 @@ struct RealFileFrenchEnglishSmokeTests {
         )
 
         let loadStartedAt = Date()
-        let runtime = try MLXMimiRuntimeLoader().load(from: artifacts)
+        let runtime = try MLXMimiRuntimeLoader(configuration: profile.mimiRuntimeConfiguration)
+            .load(from: artifacts)
         let runtimeLoadSeconds = Date().timeIntervalSince(loadStartedAt)
         let encoder = MLXMimiStreamingEncoder(runtime: runtime)
         let decoder = MLXMimiStreamingDecoder(runtime: runtime)
-        let inference = MLXHibikiInferenceSession()
+        let inference = MLXHibikiInferenceSession(runtimeConfiguration: profile.hibikiRuntimeConfiguration)
 
         let initializeStartedAt = Date()
         let inferenceDescription = try await inference.initialize(
@@ -116,6 +126,7 @@ struct RealFileFrenchEnglishSmokeTests {
             sourceAudioChunkCount: benchmarkedChunks.count,
             sourceAudioDurationSeconds: benchmarkedChunks.reduce(0) { $0 + $1.durationMilliseconds / 1000 },
             decoderSampleRate: decoderDescription.sampleRate,
+            decoderFrameDurationMilliseconds: decoderDescription.frameDurationMilliseconds,
             runtimeLoadSeconds: runtimeLoadSeconds,
             inferenceInitializeSeconds: initializeSeconds,
             sourceLoadSeconds: sourceLoadSeconds,
@@ -211,11 +222,25 @@ struct RealFileFrenchEnglishSmokeTests {
             sourceAudioChunkCount: 40,
             sourceAudioDurationSeconds: 3.2,
             decoderSampleRate: 24_000,
+            decoderFrameDurationMilliseconds: 80,
             runtimeLoadSeconds: 1,
             inferenceInitializeSeconds: 2,
             sourceLoadSeconds: 0.5,
             modelRevision: "test"
         )
+        benchmark.processingSeconds = 4
+        benchmark.decodedAudioDurationSeconds = 1.6
+        benchmark.visibleTextCharacterCount = 32
+        benchmark.hibikiStepCount = 20
+        benchmark.recordDecodedAudio(chunks: [
+            DecodedAudioChunk(
+                frameIndex: 2,
+                timestampMilliseconds: 160,
+                sampleRate: 24_000,
+                samples: [0, 0.5, -0.5, 1.0],
+                sourceTokenFrameIndex: 1
+            ),
+        ])
         benchmark.hibikiStepMilliseconds = [100, 140]
         benchmark.hibikiMainTransformerEvaluationMilliseconds = [40, 60]
         benchmark.hibikiTextLogitsExtractionMilliseconds = [4, 6]
@@ -232,10 +257,37 @@ struct RealFileFrenchEnglishSmokeTests {
         #expect(report.hibikiMainTransformerEvaluationMilliseconds.average == 50)
         #expect(report.hibikiTextLogitsExtractionMilliseconds.p50 == 6)
         #expect(report.hibikiDepformerSamplingMilliseconds.max == 10)
+        #expect(report.qualityProxy.visibleTextCharactersPerSourceSecond == 10)
+        #expect(abs(report.qualityProxy.generatedAudioRMS - sqrt(0.375)) < 0.000001)
+        #expect(report.latency.codecFrameDurationMilliseconds == 80)
+        #expect(report.latency.liveFrameBudgetHeadroomMilliseconds == -120)
+        #expect(report.latency.tokenFrameAlignmentLagMilliseconds.average == 80)
+        #expect(report.q4BaselineGeneratedRealtimeFactor == 0.311)
+        #expect(abs(report.generatedRealtimeFactorVsQ4Baseline - (0.4 / 0.311)) < 0.000001)
+        #expect(report.realtimeCapabilityClass == "sub-realtime")
+        #expect(report.paperComparison.localProfileMeasurementOnly)
+        #expect(report.paperComparison.unsupportedParityClaims.contains("ASR-BLEU"))
+        #expect(markdown.contains("## Quality Proxy"))
+        #expect(markdown.contains("- q4 baseline generated realtime factor: 0.311x"))
+        #expect(markdown.contains("- Realtime capability: sub-realtime"))
+        #expect(markdown.contains("- Generated audio RMS: 0.612"))
+        #expect(markdown.contains("## Latency / Live Budget"))
+        #expect(markdown.contains("- Codec frame duration: 80.000 ms"))
+        #expect(markdown.contains("## Paper Comparison Guardrails"))
+        #expect(markdown.contains("This is a local benchmark report, not a claim of Hibiki paper parity."))
         #expect(markdown.contains("| Hibiki step | 2 | 120.000"))
         #expect(markdown.contains("| Hibiki main transformer evaluation | 2 | 50.000"))
         #expect(markdown.contains("| Hibiki Depformer logits extraction | 2 | 10.000"))
         #expect(markdown.contains("| Hibiki generated frame construction | 2 | 1.000"))
+    }
+
+    @Test("real file benchmark profile can select Hibiki-M runtime sizing")
+    func realFileBenchmarkProfileCanSelectHibikiMRuntimeSizing() {
+        let profile = realFileModelProfile(environment: ["S2S_REAL_FILE_MODEL_PROFILE": "hibiki-m"])
+
+        #expect(profile.manifest == .hibikiMMobileLiveCandidate)
+        #expect(profile.hibikiRuntimeConfiguration == .hibikiMMobileLiveCandidate)
+        #expect(profile.mimiRuntimeConfiguration.codebookCount == 8)
     }
 }
 
@@ -268,6 +320,51 @@ private func benchmarkIncludesTail(environment: [String: String]) -> Bool {
     environment["S2S_REAL_FILE_BENCHMARK_INCLUDE_TAIL"] != "0"
 }
 
+private enum RealFileModelProfile {
+    case q4
+    case hibikiM
+
+    var manifest: ModelRuntimeManifest {
+        switch self {
+        case .q4:
+            return .hibikiQ4Default
+        case .hibikiM:
+            return .hibikiMMobileLiveCandidate
+        }
+    }
+
+    var hibikiRuntimeConfiguration: MLXHibikiRuntimeConfiguration {
+        switch self {
+        case .q4:
+            return MLXHibikiRuntimeConfiguration()
+        case .hibikiM:
+            return .hibikiMMobileLiveCandidate
+        }
+    }
+
+    var mimiRuntimeConfiguration: MLXMimiRuntimeConfiguration {
+        .mimi202407(codebookCount: hibikiRuntimeConfiguration.codebookCount)
+    }
+
+    var defaultWeightsDirectory: String {
+        switch self {
+        case .q4:
+            return "ref/hibiki-zero-mlx/weights"
+        case .hibikiM:
+            return ".scratch/hibiki-m/weights"
+        }
+    }
+}
+
+private func realFileModelProfile(environment: [String: String]) -> RealFileModelProfile {
+    switch environment["S2S_REAL_FILE_MODEL_PROFILE"]?.lowercased() {
+    case "hibiki-m", "hibikim", "mobile-live":
+        return .hibikiM
+    default:
+        return .q4
+    }
+}
+
 private func smokeAudioSource(environment: [String: String]) -> any AudioInputSource {
     if let audioPath = environment["S2S_REAL_FILE_SMOKE_AUDIO_PATH"], !audioPath.isEmpty {
         return FileAudioInputSource(fileURL: URL(fileURLWithPath: audioPath))
@@ -275,9 +372,13 @@ private func smokeAudioSource(environment: [String: String]) -> any AudioInputSo
     return RemoteAudioFileInputSource(fixture: FileAudioFixtureCatalog.frenchShortForm[0])
 }
 
-private func localHibikiArtifacts(weightsDirectory: URL) throws -> PreparedModelArtifacts {
+private func localHibikiArtifacts(
+    weightsDirectory: URL,
+    profile: RealFileModelProfile = .q4
+) throws -> PreparedModelArtifacts {
     let fileManager = FileManager.default
-    let files = try ModelRuntimeManifest.hibikiQ4Default.requiredFiles.map { requirement in
+    let manifest = profile.manifest
+    let files = try manifest.requiredFiles.map { requirement in
         let url = weightsDirectory.appendingPathComponent(requirement.fileName, isDirectory: false)
         guard fileManager.fileExists(atPath: url.path) else {
             throw ModelArtifactPreparationError.missing(url.path)
@@ -289,7 +390,7 @@ private func localHibikiArtifacts(weightsDirectory: URL) throws -> PreparedModel
             source: .cache
         )
     }
-    return PreparedModelArtifacts(manifest: .hibikiQ4Default, files: files)
+    return PreparedModelArtifacts(manifest: manifest, files: files)
 }
 
 private func writeSmokeWAV(chunks: [DecodedAudioChunk], to url: URL) throws {
@@ -403,7 +504,7 @@ private func benchmarkGeneratedFrame(
     let decodeStartedAt = Date()
     let decodedChunks = try await decoder.decode(step.generatedAudioTokens)
     benchmark.decodeMilliseconds.append(Date().timeIntervalSince(decodeStartedAt) * 1000)
-    benchmark.decodedSampleCount += decodedChunks.reduce(0) { $0 + $1.samples.count }
+    benchmark.recordDecodedAudio(chunks: decodedChunks)
 
     return BenchmarkGeneratedFrameOutput(
         text: step.text,
@@ -440,9 +541,13 @@ private struct BenchmarkPostInputStopDetector {
 }
 
 private struct RealFileModelFlowBenchmark {
+    private static let generatedAudioNearSilenceThreshold = 0.0001
+    private static let q4BaselineGeneratedRealtimeFactor = 0.311
+
     var sourceAudioChunkCount: Int
     var sourceAudioDurationSeconds: Double
     var decoderSampleRate: Int
+    var decoderFrameDurationMilliseconds: Double = 80
     var runtimeLoadSeconds: Double
     var inferenceInitializeSeconds: Double
     var sourceLoadSeconds: Double
@@ -455,6 +560,9 @@ private struct RealFileModelFlowBenchmark {
     var decodedSampleCount = 0
     var decodedAudioDurationSeconds: Double = 0
     var visibleTextCharacterCount = 0
+    var generatedAudioSquaredSampleSum = 0.0
+    var generatedAudioPeakAmplitude = 0.0
+    var generatedAudioNearSilenceSampleCount = 0
     var encodeMilliseconds: [Double] = []
     var tailEncodeMilliseconds: [Double] = []
     var hibikiStepMilliseconds: [Double] = []
@@ -467,25 +575,82 @@ private struct RealFileModelFlowBenchmark {
     var hibikiStateCacheUpdateMilliseconds: [Double] = []
     var hibikiGeneratedFrameConstructionMilliseconds: [Double] = []
     var decodeMilliseconds: [Double] = []
+    var tokenFrameAlignmentLagMilliseconds: [Double] = []
+
+    mutating func recordDecodedAudio(chunks: [DecodedAudioChunk]) {
+        for chunk in chunks {
+            tokenFrameAlignmentLagMilliseconds.append(
+                chunk.timestampMilliseconds - Double(chunk.sourceTokenFrameIndex) * decoderFrameDurationMilliseconds
+            )
+            for sample in chunk.samples {
+                let amplitude = Double(abs(sample))
+                decodedSampleCount += 1
+                generatedAudioSquaredSampleSum += amplitude * amplitude
+                generatedAudioPeakAmplitude = max(generatedAudioPeakAmplitude, amplitude)
+                if amplitude <= Self.generatedAudioNearSilenceThreshold {
+                    generatedAudioNearSilenceSampleCount += 1
+                }
+            }
+        }
+    }
 
     func report() -> RealFileModelFlowBenchmarkReport {
-        RealFileModelFlowBenchmarkReport(
+        let generatedRealtimeFactor = processingSeconds > 0 ? decodedAudioDurationSeconds / processingSeconds : 0
+        let processingMillisecondsPerGeneratedFrame = hibikiStepCount > 0
+            ? processingSeconds * 1000 / Double(hibikiStepCount)
+            : 0
+        return RealFileModelFlowBenchmarkReport(
             modelRevision: modelRevision,
             sourceAudioChunkCount: sourceAudioChunkCount,
             sourceAudioDurationSeconds: sourceAudioDurationSeconds,
             decoderSampleRate: decoderSampleRate,
+            decoderFrameDurationMilliseconds: decoderFrameDurationMilliseconds,
             runtimeLoadSeconds: runtimeLoadSeconds,
             inferenceInitializeSeconds: inferenceInitializeSeconds,
             sourceLoadSeconds: sourceLoadSeconds,
             processingSeconds: processingSeconds,
             generatedAudioDurationSeconds: decodedAudioDurationSeconds,
-            generatedRealtimeFactor: processingSeconds > 0 ? decodedAudioDurationSeconds / processingSeconds : 0,
+            generatedRealtimeFactor: generatedRealtimeFactor,
+            q4BaselineGeneratedRealtimeFactor: Self.q4BaselineGeneratedRealtimeFactor,
+            generatedRealtimeFactorVsQ4Baseline: Self.q4BaselineGeneratedRealtimeFactor > 0
+                ? generatedRealtimeFactor / Self.q4BaselineGeneratedRealtimeFactor
+                : 0,
+            realtimeCapabilityClass: RealtimeOutputPolicy()
+                .classify(generatedRealtimeFactor: generatedRealtimeFactor)
+                .displayName,
             encodedFrameCount: encodedFrameCount,
             tailEncodedFrameCount: tailEncodedFrameCount,
             hibikiStepCount: hibikiStepCount,
             decodedAudioChunkCount: decodedAudioChunkCount,
             decodedSampleCount: decodedSampleCount,
             visibleTextCharacterCount: visibleTextCharacterCount,
+            qualityProxy: BenchmarkQualityProxy(
+                visibleTextCharacterCount: visibleTextCharacterCount,
+                visibleTextCharactersPerSourceSecond: sourceAudioDurationSeconds > 0
+                    ? Double(visibleTextCharacterCount) / sourceAudioDurationSeconds
+                    : 0,
+                visibleTextCharactersPerGeneratedAudioSecond: decodedAudioDurationSeconds > 0
+                    ? Double(visibleTextCharacterCount) / decodedAudioDurationSeconds
+                    : 0,
+                generatedAudioRMS: decodedSampleCount > 0
+                    ? sqrt(generatedAudioSquaredSampleSum / Double(decodedSampleCount))
+                    : 0,
+                generatedAudioPeakAmplitude: generatedAudioPeakAmplitude,
+                generatedAudioNearSilenceRatio: decodedSampleCount > 0
+                    ? Double(generatedAudioNearSilenceSampleCount) / Double(decodedSampleCount)
+                    : 0,
+                generatedAudioNearSilenceThreshold: Self.generatedAudioNearSilenceThreshold
+            ),
+            latency: BenchmarkLatencyReport(
+                codecFrameDurationMilliseconds: decoderFrameDurationMilliseconds,
+                processingMillisecondsPerGeneratedFrame: processingMillisecondsPerGeneratedFrame,
+                liveFrameBudgetHeadroomMilliseconds: decoderFrameDurationMilliseconds
+                    - processingMillisecondsPerGeneratedFrame,
+                estimatedSmoothPlaybackStartupDelaySeconds: max(0, processingSeconds - decodedAudioDurationSeconds),
+                generatedRealtimeFactor: generatedRealtimeFactor,
+                tokenFrameAlignmentLagMilliseconds: BenchmarkSummary(values: tokenFrameAlignmentLagMilliseconds)
+            ),
+            paperComparison: BenchmarkPaperComparisonReport(),
             encodeMilliseconds: BenchmarkSummary(values: encodeMilliseconds),
             tailEncodeMilliseconds: BenchmarkSummary(values: tailEncodeMilliseconds),
             hibikiStepMilliseconds: BenchmarkSummary(values: hibikiStepMilliseconds),
@@ -518,14 +683,45 @@ private struct RealFileModelFlowBenchmark {
         - Generated audio duration: \(format(report.generatedAudioDurationSeconds))s
         - Processing time: \(format(report.processingSeconds))s
         - Generated realtime factor: \(format(report.generatedRealtimeFactor))x
+        - q4 baseline generated realtime factor: \(format(report.q4BaselineGeneratedRealtimeFactor))x
+        - Generated realtime factor vs q4 baseline: \(format(report.generatedRealtimeFactorVsQ4Baseline))x
+        - Realtime capability: \(report.realtimeCapabilityClass)
         - Runtime load: \(format(report.runtimeLoadSeconds))s
         - Hibiki initialize: \(format(report.inferenceInitializeSeconds))s
         - Source load: \(format(report.sourceLoadSeconds))s
+        - Codec frame duration: \(format(report.decoderFrameDurationMilliseconds)) ms
         - Encoded frames: \(report.encodedFrameCount)
         - Tail encoded frames: \(report.tailEncodedFrameCount)
         - Hibiki steps: \(report.hibikiStepCount)
         - Decoded chunks: \(report.decodedAudioChunkCount)
         - Visible text characters: \(report.visibleTextCharacterCount)
+
+        ## Quality Proxy
+
+        These are lightweight local benchmark proxies, not ASR-BLEU, speaker similarity, or human quality scores.
+
+        - Visible text characters per source second: \(format(report.qualityProxy.visibleTextCharactersPerSourceSecond))
+        - Visible text characters per generated audio second: \(format(report.qualityProxy.visibleTextCharactersPerGeneratedAudioSecond))
+        - Generated audio RMS: \(format(report.qualityProxy.generatedAudioRMS))
+        - Generated audio peak amplitude: \(format(report.qualityProxy.generatedAudioPeakAmplitude))
+        - Generated audio near-silence ratio: \(format(report.qualityProxy.generatedAudioNearSilenceRatio))
+        - Near-silence threshold: \(format(report.qualityProxy.generatedAudioNearSilenceThreshold))
+
+        ## Latency / Live Budget
+
+        - Codec frame duration: \(format(report.latency.codecFrameDurationMilliseconds)) ms
+        - Processing per generated frame: \(format(report.latency.processingMillisecondsPerGeneratedFrame)) ms
+        - Live frame budget headroom: \(format(report.latency.liveFrameBudgetHeadroomMilliseconds)) ms
+        - Estimated smooth-playback startup delay: \(format(report.latency.estimatedSmoothPlaybackStartupDelaySeconds))s
+        - Token-frame alignment lag avg: \(format(report.latency.tokenFrameAlignmentLagMilliseconds.average)) ms
+        - Token-frame alignment lag p95: \(format(report.latency.tokenFrameAlignmentLagMilliseconds.p95)) ms
+
+        ## Paper Comparison Guardrails
+
+        This is a local benchmark report, not a claim of Hibiki paper parity.
+
+        - Paper-reported target: \(report.paperComparison.paperHibikiMClaimSummary)
+        - Unsupported parity claims: \(report.paperComparison.unsupportedParityClaims.joined(separator: ", "))
 
         | Stage | Count | Avg ms | P50 ms | P95 ms | Max ms |
         | --- | ---: | ---: | ---: | ---: | ---: |
@@ -554,18 +750,25 @@ private struct RealFileModelFlowBenchmarkReport: Codable {
     var sourceAudioChunkCount: Int
     var sourceAudioDurationSeconds: Double
     var decoderSampleRate: Int
+    var decoderFrameDurationMilliseconds: Double
     var runtimeLoadSeconds: Double
     var inferenceInitializeSeconds: Double
     var sourceLoadSeconds: Double
     var processingSeconds: Double
     var generatedAudioDurationSeconds: Double
     var generatedRealtimeFactor: Double
+    var q4BaselineGeneratedRealtimeFactor: Double
+    var generatedRealtimeFactorVsQ4Baseline: Double
+    var realtimeCapabilityClass: String
     var encodedFrameCount: Int
     var tailEncodedFrameCount: Int
     var hibikiStepCount: Int
     var decodedAudioChunkCount: Int
     var decodedSampleCount: Int
     var visibleTextCharacterCount: Int
+    var qualityProxy: BenchmarkQualityProxy
+    var latency: BenchmarkLatencyReport
+    var paperComparison: BenchmarkPaperComparisonReport
     var encodeMilliseconds: BenchmarkSummary
     var tailEncodeMilliseconds: BenchmarkSummary
     var hibikiStepMilliseconds: BenchmarkSummary
@@ -578,6 +781,37 @@ private struct RealFileModelFlowBenchmarkReport: Codable {
     var hibikiStateCacheUpdateMilliseconds: BenchmarkSummary
     var hibikiGeneratedFrameConstructionMilliseconds: BenchmarkSummary
     var decodeMilliseconds: BenchmarkSummary
+}
+
+private struct BenchmarkQualityProxy: Codable {
+    var visibleTextCharacterCount: Int
+    var visibleTextCharactersPerSourceSecond: Double
+    var visibleTextCharactersPerGeneratedAudioSecond: Double
+    var generatedAudioRMS: Double
+    var generatedAudioPeakAmplitude: Double
+    var generatedAudioNearSilenceRatio: Double
+    var generatedAudioNearSilenceThreshold: Double
+}
+
+private struct BenchmarkLatencyReport: Codable {
+    var codecFrameDurationMilliseconds: Double
+    var processingMillisecondsPerGeneratedFrame: Double
+    var liveFrameBudgetHeadroomMilliseconds: Double
+    var estimatedSmoothPlaybackStartupDelaySeconds: Double
+    var generatedRealtimeFactor: Double
+    var tokenFrameAlignmentLagMilliseconds: BenchmarkSummary
+}
+
+private struct BenchmarkPaperComparisonReport: Codable {
+    var localProfileMeasurementOnly = true
+    var paperHibikiMClaimSummary =
+        "Hibiki-M is reported faster than realtime on iPhone 16 Pro in the paper; local capability must be measured here."
+    var unsupportedParityClaims = [
+        "ASR-BLEU",
+        "LAAL",
+        "speaker similarity",
+        "human naturalness",
+    ]
 }
 
 private struct BenchmarkSummary: Codable {

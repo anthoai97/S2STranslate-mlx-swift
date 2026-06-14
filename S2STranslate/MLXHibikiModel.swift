@@ -88,14 +88,15 @@ final class MLXHibikiDepformerSlice {
     let embedding: MLXHibikiEmbedding
     let linearIn: MLXMimiLinear
     let linearOut: MLXMimiLinear
-    let norm: MLXMimiLayerNorm
+    let norm: MLXMimiLayerNorm?
     let transformer: MLXMimiTransformer
 
     init(
         inputVocabSize: Int,
         outputVocabSize: Int,
         mainTransformerDimension: Int,
-        configuration: MLXMimiTransformerConfiguration
+        configuration: MLXMimiTransformerConfiguration,
+        includesOutputNorm: Bool
     ) {
         self.embedding = MLXHibikiEmbedding(
             vocabSize: inputVocabSize,
@@ -111,7 +112,9 @@ final class MLXHibikiDepformerSlice {
             outputDimensions: outputVocabSize,
             bias: false
         )
-        self.norm = MLXMimiLayerNorm(dimensions: configuration.modelDimension, epsilon: 1e-5)
+        self.norm = includesOutputNorm
+            ? MLXMimiLayerNorm(dimensions: configuration.modelDimension, epsilon: 1e-5)
+            : nil
         self.transformer = MLXMimiTransformer(configuration)
     }
 }
@@ -156,7 +159,8 @@ final class MLXHibikiLanguageModel {
                     : topology.audioVocabSize,
                 outputVocabSize: topology.audioVocabSize - 1,
                 mainTransformerDimension: topology.mainTransformer.modelDimension,
-                configuration: topology.depformerTransformer
+                configuration: topology.depformerTransformer,
+                includesOutputNorm: !topology.depformerMultiLinear
             )
         }
         self.mainTransformerCache = transformer.makeCache(batchSize: 1)
@@ -222,7 +226,8 @@ final class MLXHibikiLanguageModel {
             let tokenIDs = MLXArray([Int32(lastToken)]).reshaped([1, 1])
             var x = slice.linearIn(mainTransformerOutput) + slice.embedding(tokenIDs)
             x = slice.transformer(x, cache: depformerCache)
-            let logits = slice.linearOut(slice.norm(x))[0..., -1, 0...]
+            let normalized = slice.norm.map { $0(x) } ?? x
+            let logits = slice.linearOut(normalized)[0..., -1, 0...]
             eval(logits)
             timings.evaluationMilliseconds += Date().timeIntervalSince(evaluationStartedAt) * 1000
 

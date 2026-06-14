@@ -49,6 +49,16 @@ struct MLXMimiRuntimeTests {
         try runtime.validateMetadata()
     }
 
+    @Test("runtime validates reduced Mimi codebook count for Hibiki-M")
+    func runtimeValidatesReducedMimiCodebookCountForHibikiM() throws {
+        let runtime = MLXMimiRuntime(
+            artifact: try makePreparedMimiArtifact(),
+            configuration: .mimi202407(codebookCount: 8)
+        )
+
+        try runtime.validateMetadata()
+    }
+
     @Test("runtime reports incompatible metadata")
     func runtimeReportsIncompatibleMetadata() throws {
         let runtime = MLXMimiRuntime(
@@ -65,6 +75,22 @@ struct MLXMimiRuntimeTests {
         #expect(
             throws: MimiRuntimeError.incompatibleConfiguration(
                 "sampleRate expected 24000, got 16000"
+            )
+        ) {
+            try runtime.validateMetadata()
+        }
+    }
+
+    @Test("runtime rejects out of range Mimi codebook count")
+    func runtimeRejectsOutOfRangeMimiCodebookCount() throws {
+        let runtime = MLXMimiRuntime(
+            artifact: try makePreparedMimiArtifact(),
+            configuration: .mimi202407(codebookCount: 17)
+        )
+
+        #expect(
+            throws: MimiRuntimeError.incompatibleConfiguration(
+                "codebookCount expected 1...16, got 17"
             )
         ) {
             try runtime.validateMetadata()

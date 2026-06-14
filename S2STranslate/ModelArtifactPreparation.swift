@@ -36,6 +36,17 @@ public struct ModelRuntimeManifest: Equatable, Sendable {
             ModelArtifactRequirement(role: "tokenizer", fileName: "tokenizer_spm_48k_multi6_2.model"),
         ]
     )
+
+    public static let hibikiMMobileLiveCandidate = ModelRuntimeManifest(
+        modelRepo: "kyutai/hibiki-1b-pytorch-bf16",
+        revision: "65dee9b6a682393d4e9b193ccbe314e401e230c9",
+        requiredFiles: [
+            ModelArtifactRequirement(role: "architectureConfig", fileName: "config.json"),
+            ModelArtifactRequirement(role: "hibikiWeights", fileName: "hibikim-pytorch-37c6cfd6@200.safetensors"),
+            ModelArtifactRequirement(role: "mimiWeights", fileName: "mimi-pytorch-e351c8d8@125.safetensors"),
+            ModelArtifactRequirement(role: "tokenizer", fileName: "tokenizer_spm_48k_multi6_2.model"),
+        ]
+    )
 }
 
 private struct ModelRuntimeManifestDTO: Decodable {
